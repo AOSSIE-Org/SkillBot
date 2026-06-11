@@ -1,0 +1,32 @@
+[
+  {
+    "timestamp": "2026-06-11T06:28:50.131419+00:00",
+    "query": "hi",
+    "reason": "ollama_unavailable",
+    "thread_id": 1514516717588451369
+  },
+  {
+    "timestamp": "2026-06-11T06:29:33.996652+00:00",
+    "query": "hi",
+    "reason": "ollama_unavailable",
+    "thread_id": 1514516902330896445
+  },
+  {
+    "timestamp": "2026-06-11T06:43:02.871048+00:00",
+    "query": "hi",
+    "reason": "ollama_unavailable",
+    "thread_id": 1514520294717526096
+  },
+  {
+    "timestamp": "2026-06-11T06:43:09.796853+00:00",
+    "query": "hi",
+    "reason": "ollama_unavailable",
+    "thread_id": 1514520323834511490
+  },
+  {
+    "timestamp": "2026-06-11T06:43:47.538207+00:00",
+    "query": "hi",
+    "reason": "ollama_unavailable",
+    "thread_id": 1514520482131607553
+  }
+]

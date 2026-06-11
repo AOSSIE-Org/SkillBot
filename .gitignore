@@ -327,3 +327,5 @@ TSWLatexianTemp*
 
 venv/
 .env
+__pycache__/
+.commandcode/

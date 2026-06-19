@@ -193,7 +193,7 @@ async def process_message(message: discord.Message):
 
     is_in_thread = isinstance(message.channel, discord.Thread)
     is_in_configured_channel = (
-        (message.channel.parent.id if is_in_thread else message.channel.id)
+        (message.channel.parent_id if is_in_thread else message.channel.id)
         == DISCORD_CHANNEL_ID_INT
     )
 

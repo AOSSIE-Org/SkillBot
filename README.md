@@ -43,7 +43,7 @@
 
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/AOSSIE-Org/SkillBot/badge)](https://scorecard.dev/viewer/?uri=github.com/AOSSIE-Org/SkillBot)
 
-[![Best Practices](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2F%7Bowner%7D%2F%7Brepo%7D%2Fmain%2Fchecklist-status.json&logo=openssf)](./BestPracticesChecklist.md)
+[![Best Practices](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FAOSSIE-Org%2FSkillBot%2Fmain%2Fchecklist-status.json&query=%24.percent&suffix=%25&label=Best%20Practices&logo=openssf)](./BestPracticesChecklist.md)
 </p>
 
 ---

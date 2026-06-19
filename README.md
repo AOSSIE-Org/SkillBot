@@ -41,7 +41,7 @@
   <img src="https://img.shields.io/youtube/channel/subscribers/UCKVVLbawY7Gej_3o2WKsoiA?style=flat&logo=youtube&logoColor=white%20&logoSize=auto&labelColor=FF0000&color=FF0000" alt="Youtube Badge"></a>
 
 
-[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/{owner}/{repo}/badge)](https://scorecard.dev/viewer/?uri=github.com/{owner}/{repo})
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/AOSSIE-Org/SkillBot/badge)](https://scorecard.dev/viewer/?uri=github.com/AOSSIE-Org/SkillBot)
 
 [![Best Practices](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2F%7Bowner%7D%2F%7Brepo%7D%2Fmain%2Fchecklist-status.json&logo=openssf)](./BestPracticesChecklist.md)
 </p>

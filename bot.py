@@ -36,6 +36,18 @@ ollama_lock = asyncio.Lock()
 THREAD_HISTORY_LIMIT = 10  # messages to pull from thread as conversation context
 
 
+def clean_bot_mention(content: str) -> str:
+    """Remove a leading mention of the bot from the content."""
+    if client.user:
+        content = re.sub(
+            rf'^\s*(?:<@!?{client.user.id}>\s*)+',
+            '',
+            content,
+            count=1,
+        )
+    return content.strip()
+
+
 def _load_gap_log():
     if GAP_LOG_PATH.exists():
         try:
@@ -134,20 +146,22 @@ async def _build_conversation_context(thread: discord.Thread, current_author: di
     history_parts = []
     try:
         async for msg in thread.history(limit=THREAD_HISTORY_LIMIT, oldest_first=True):
+            content_cleaned = clean_bot_mention(msg.content)
             if msg.author.bot:
-                history_parts.append(f"Bot: {msg.content[:300]}")
+                history_parts.append(f"Bot: {content_cleaned[:300]}")
             else:
-                history_parts.append(f"{msg.author.display_name}: {msg.content[:300]}")
+                history_parts.append(f"{msg.author.display_name}: {content_cleaned[:300]}")
     except Exception as e:
         logger.error(f"Error fetching thread history for {thread.id}: {e}")
 
     if not history_parts:
         return ""
 
+    current_query_cleaned = clean_bot_mention(current_query)
     return (
         "Previous conversation in this thread:\n" +
         "\n".join(history_parts) +
-        f"\n\nCurrent question from {current_author.display_name}: {current_query}"
+        f"\n\nCurrent question from {current_author.display_name}: {current_query_cleaned}"
     )
 
 
@@ -175,11 +189,12 @@ async def _get_or_create_thread(message: discord.Message, channel: discord.TextC
 
     try:
         author = message.author
+        cleaned_title = clean_bot_mention(message.content)[:50]
         thread = await message.create_thread(
-            name=f"Q&A: {author.display_name} — {message.content[:50]}",
+            name=f"Q&A: {author.display_name} — {cleaned_title}",
             auto_archive_duration=1440,  # 24 hours
         )
-        logger.info(f"Created thread {thread.id} for {author.name} — query: {message.content[:80]}")
+        logger.info(f"Created thread {thread.id} for {author.name} — query: {cleaned_title}")
         return thread
     except discord.Forbidden:
         logger.error(f"Cannot create thread — missing permissions in channel {channel.id}")
@@ -236,10 +251,16 @@ async def process_message(message: discord.Message):
         == DISCORD_CHANNEL_ID_INT
     )
 
-    if not is_in_configured_channel:
+    bot_mentioned = (client.user in message.mentions) if client.user else False
+
+    # Process the message if:
+    # 1. It is in the configured channel (or in a thread inside it), OR
+    # 2. The bot is explicitly mentioned/tagged
+    if not is_in_configured_channel and not bot_mentioned:
         return
 
     author = message.author
+    cleaned_query = clean_bot_mention(message.content)
 
     if is_in_thread:
         thread = message.channel
@@ -250,7 +271,7 @@ async def process_message(message: discord.Message):
         channel = message.channel
         thread = await _get_or_create_thread(message, channel)
         if not thread:
-            await _log_gap(message.content, "thread_creation_failed")
+            await _log_gap(cleaned_query, "thread_creation_failed")
             try:
                 await message.reply(
                     "I couldn't create a thread to answer your question. Please ask a maintainer for help."
@@ -269,20 +290,20 @@ async def process_message(message: discord.Message):
 
         try:
             skill_context = load_skill_context()
-            conversation_context = await _build_conversation_context(thread, author, message.content)
+            conversation_context = await _build_conversation_context(thread, author, cleaned_query)
 
             if conversation_context:
                 full_prompt = conversation_context
             else:
-                full_prompt = message.content
+                full_prompt = cleaned_query
 
             # Check if the query has sufficient information/context based on .clinerules
-            if not is_query_covered(message.content):
+            if not is_query_covered(cleaned_query):
                 # Pass conversation context explicitly to the LLM so it has thread history for the clarifying question
                 history_str = f"Previous conversation history:\n{conversation_context}\n\n" if conversation_context else ""
                 full_prompt = (
                     f"{history_str}"
-                    f"The user is asking: '{message.content}'. "
+                    f"The user is asking: '{cleaned_query}'. "
                     f"This query is not covered by the standard guidelines in .clinerules. "
                     f"Generate a polite response asking the user to clarify if they need help with: "
                     f"1. Setting up the project template\n"
@@ -292,7 +313,7 @@ async def process_message(message: discord.Message):
                     f"Keep the response short, friendly, and under 5 lines."
                 )
                 await _log_gap(
-                    message.content,
+                    cleaned_query,
                     "insufficient_info",
                     thread_id=thread.id,
                 )
@@ -301,14 +322,14 @@ async def process_message(message: discord.Message):
 
             if used_fallback or not skill_context:
                 await _log_gap(
-                    message.content,
+                    cleaned_query,
                     "ollama_unavailable" if used_fallback else "no_skill_context",
                     thread_id=thread.id,
                 )
         except Exception as e:
             logger.error(f"Unexpected error processing message from {author.name}: {e}")
             response_text = "An unexpected error occurred. Please try again or ask a maintainer."
-            await _log_gap(message.content, f"processing_error: {e}", thread_id=thread.id)
+            await _log_gap(cleaned_query, f"processing_error: {e}", thread_id=thread.id)
 
         if len(response_text) > 1900:
             response_text = response_text[:1896] + "..."

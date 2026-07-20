@@ -8,6 +8,15 @@ import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 from dotenv import load_dotenv
+from repo_router import (
+    get_available_repos,
+    get_repo_from_thread_name,
+    detect_repo_by_keywords,
+    classify_repo_with_llm,
+    load_repo_context,
+    send_clarification_request,
+)
+
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -165,7 +174,9 @@ async def _build_conversation_context(thread: discord.Thread, current_author: di
     )
 
 
-async def _get_or_create_thread(message: discord.Message, channel: discord.TextChannel) -> discord.Thread | None:
+async def _get_or_create_thread(
+    message: discord.Message, channel: discord.TextChannel, thread_prefix: str = "Unassigned"
+) -> discord.Thread | None:
     """If message is already in a thread, return that thread. Otherwise create a new one.
     One thread per conversation — never reuses threads by user ID. Returns None on failure."""
     if isinstance(message.channel, discord.Thread):
@@ -173,7 +184,7 @@ async def _get_or_create_thread(message: discord.Message, channel: discord.TextC
         if not thread.archived and not thread.locked:
             return thread
         logger.warning(f"Thread {thread.id} is archived/locked — creating a new one")
-        return None # cannot create thread from message already in a thread
+        return None  # cannot create thread from message already in a thread
 
     # If the message already has a thread attached to it, fetch and use it
     if message.flags.has_thread:
@@ -181,20 +192,30 @@ async def _get_or_create_thread(message: discord.Message, channel: discord.TextC
             thread = message.guild.get_thread(message.id) if message.guild else None
             if not thread:
                 thread = await client.fetch_channel(message.id)
-            if isinstance(thread, discord.Thread) and not thread.archived and not thread.locked:
-                logger.info(f"Reusing existing active thread {thread.id} from message object")
+            if (
+                isinstance(thread, discord.Thread)
+                and not thread.archived
+                and not thread.locked
+            ):
+                logger.info(
+                    f"Reusing existing active thread {thread.id} from message object"
+                )
                 return thread
         except Exception as fetch_err:
-            logger.error(f"Failed to fetch existing thread for message {message.id}: {fetch_err}")
+            logger.error(
+                f"Failed to fetch existing thread for message {message.id}: {fetch_err}"
+            )
 
     try:
         author = message.author
         cleaned_title = clean_bot_mention(message.content)[:50]
         thread = await message.create_thread(
-            name=f"Q&A: {author.display_name} — {cleaned_title}",
+            name=f"{thread_prefix} Q&A — {author.display_name}: {cleaned_title}",
             auto_archive_duration=1440,  # 24 hours
         )
-        logger.info(f"Created thread {thread.id} for {author.name} — query: {cleaned_title}")
+        logger.info(
+            f"Created thread {thread.id} for {author.name} — query: {cleaned_title}"
+        )
         return thread
     except discord.Forbidden:
         logger.error(f"Cannot create thread — missing permissions in channel {channel.id}")
@@ -262,14 +283,42 @@ async def process_message(message: discord.Message):
     author = message.author
     cleaned_query = clean_bot_mention(message.content)
 
+    available_repos = get_available_repos()
+
     if is_in_thread:
         thread = message.channel
         if thread.archived or thread.locked:
             logger.warning(f"Thread {thread.id} is archived/locked — cannot respond")
             return
+        mapped_repo = get_repo_from_thread_name(thread.name, available_repos)
+
+        # If not mapped yet, try to detect it from the query
+        if not mapped_repo:
+            detected_repo = detect_repo_by_keywords(cleaned_query, available_repos)
+            if not detected_repo:
+                detected_repo = await classify_repo_with_llm(
+                    cleaned_query, available_repos, OLLAMA_MODEL, OLLAMA_URL
+                )
+
+            if detected_repo:
+                new_name = thread.name.replace("Unassigned", detected_repo)
+                try:
+                    await thread.edit(name=new_name[:100])
+                    logger.info(f"Renamed thread {thread.id} to: {new_name}")
+                except Exception as e:
+                    logger.error(f"Failed to rename thread {thread.id}: {e}")
+                mapped_repo = detected_repo
     else:
+        # Check if we can detect the repository from the initial message
+        detected_repo = detect_repo_by_keywords(cleaned_query, available_repos)
+        if not detected_repo:
+            detected_repo = await classify_repo_with_llm(
+                cleaned_query, available_repos, OLLAMA_MODEL, OLLAMA_URL
+            )
+
         channel = message.channel
-        thread = await _get_or_create_thread(message, channel)
+        thread_prefix = detected_repo if detected_repo else "Unassigned"
+        thread = await _get_or_create_thread(message, channel, thread_prefix)
         if not thread:
             await _log_gap(cleaned_query, "thread_creation_failed")
             try:
@@ -279,6 +328,29 @@ async def process_message(message: discord.Message):
             except Exception:
                 pass
             return
+        mapped_repo = detected_repo
+
+    # If repository is still not determined, request clarification using .clinerules skill context
+    if not mapped_repo:
+        skill_context = load_skill_context()
+        if skill_context:
+            fallback_prompt = (
+                f"The user asked: '{cleaned_query}'. "
+                f"No specific repository was matched from available projects ({', '.join(available_repos)}). "
+                f"Politely ask the user which project they need help with or clarify their request."
+            )
+            response_text, _ = await generate_ollama_response(fallback_prompt, skill_context)
+            try:
+                await thread.send(response_text)
+            except Exception as e:
+                logger.error(f"Error sending fallback clarification to thread {thread.id}: {e}")
+        else:
+            await send_clarification_request(thread, available_repos)
+
+        await _log_gap(
+            cleaned_query, "repo_clarification_needed", thread_id=thread.id
+        )
+        return
 
     async with ollama_lock:
         try:
@@ -286,50 +358,47 @@ async def process_message(message: discord.Message):
             async with thread.typing():
                 pass
         except Exception as e:
-            logger.warning(f"Could not trigger typing indicator in thread {thread.id}: {e}")
+            logger.warning(
+                f"Could not trigger typing indicator in thread {thread.id}: {e}"
+            )
 
         try:
-            skill_context = load_skill_context()
-            conversation_context = await _build_conversation_context(thread, author, cleaned_query)
+            # Load ONLY repository-specific context (no .clinerules after repo identification)
+            repo_context = load_repo_context(mapped_repo)
+
+            conversation_context = await _build_conversation_context(
+                thread, author, cleaned_query
+            )
 
             if conversation_context:
                 full_prompt = conversation_context
             else:
                 full_prompt = cleaned_query
 
-            # Check if the query has sufficient information/context based on .clinerules
-            if not is_query_covered(cleaned_query):
-                # Pass conversation context explicitly to the LLM so it has thread history for the clarifying question
-                history_str = f"Previous conversation history:\n{conversation_context}\n\n" if conversation_context else ""
-                full_prompt = (
-                    f"{history_str}"
-                    f"The user is asking: '{cleaned_query}'. "
-                    f"This query is not covered by the standard guidelines in .clinerules. "
-                    f"Generate a polite response asking the user to clarify if they need help with: "
-                    f"1. Setting up the project template\n"
-                    f"2. Writing or updating the README\n"
-                    f"3. Contributing to the repository\n"
-                    f"4. Debugging an error\n"
-                    f"Keep the response short, friendly, and under 5 lines."
-                )
+            response_text, used_fallback = await generate_ollama_response(
+                full_prompt, repo_context
+            )
+
+            # Prefix response with the active repository context header
+            if not response_text.startswith("According to the"):
+                response_text = f"According to the {mapped_repo} repository context:\n\n{response_text}"
+
+            if used_fallback or not repo_context:
                 await _log_gap(
                     cleaned_query,
-                    "insufficient_info",
-                    thread_id=thread.id,
-                )
-
-            response_text, used_fallback = await generate_ollama_response(full_prompt, skill_context)
-
-            if used_fallback or not skill_context:
-                await _log_gap(
-                    cleaned_query,
-                    "ollama_unavailable" if used_fallback else "no_skill_context",
+                    "ollama_unavailable" if used_fallback else "no_repo_context",
                     thread_id=thread.id,
                 )
         except Exception as e:
-            logger.error(f"Unexpected error processing message from {author.name}: {e}")
-            response_text = "An unexpected error occurred. Please try again or ask a maintainer."
-            await _log_gap(cleaned_query, f"processing_error: {e}", thread_id=thread.id)
+            logger.error(
+                f"Unexpected error processing message from {author.name}: {e}"
+            )
+            response_text = (
+                "An unexpected error occurred. Please try again or ask a maintainer."
+            )
+            await _log_gap(
+                cleaned_query, f"processing_error: {e}", thread_id=thread.id
+            )
 
         if len(response_text) > 1900:
             response_text = response_text[:1896] + "..."

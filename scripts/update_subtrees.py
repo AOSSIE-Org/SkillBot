@@ -42,7 +42,7 @@ def has_context_changes(old_commit: str, new_commit: str, prefix: str) -> bool:
         new_commit,
         "--",
         f"{prefix}/AGENTS.md",
-        f"{prefix}/.agent/",
+        f"{prefix}/.agent",
     ]
     code, out = run_command(cmd, bot_root)
     if code != 0 or not out.strip():
@@ -75,8 +75,9 @@ def sync_subtrees():
         git_url = url if url.endswith(".git") else f"{url}.git"
         prefix = f"repos/{repo_name}"
         prefix_path = bot_root / prefix
+        is_new_subtree = not (prefix_path.exists() and any(prefix_path.iterdir()))
 
-        if prefix_path.exists() and any(prefix_path.iterdir()):
+        if not is_new_subtree:
             logger.info(f"Subtree '{prefix}' exists. Pulling updates from {git_url}...")
             cmd = [
                 "git",
@@ -108,15 +109,18 @@ def sync_subtrees():
         if code == 0:
             new_head = get_head_commit()
             if old_head and new_head and old_head != new_head:
-                if not has_context_changes(old_head, new_head, prefix):
-                    logger.info(
-                        f"No non-zero line changes in AGENTS.md or .agent/ for {repo_name}. Resetting commit."
-                    )
-                    run_command(["git", "reset", "--hard", old_head], bot_root)
+                if is_new_subtree:
+                    logger.info(f"Subtree '{prefix}' newly added. Keeping initial commit.")
                 else:
-                    logger.info(
-                        f"Non-zero line changes confirmed in AGENTS.md or .agent/ for {repo_name}. Keeping commit."
-                    )
+                    if not has_context_changes(old_head, new_head, prefix):
+                        logger.info(
+                            f"No non-zero line changes in AGENTS.md or .agent/ for {repo_name}. Resetting commit."
+                        )
+                        run_command(["git", "reset", "--hard", old_head], bot_root)
+                    else:
+                        logger.info(
+                            f"Non-zero line changes confirmed in AGENTS.md or .agent/ for {repo_name}. Keeping commit."
+                        )
         else:
             logger.error(f"Failed to sync subtree for {repo_name}")
 

@@ -1,12 +1,18 @@
+import asyncio
 import sys
+import io
 from pathlib import Path
+
+# Ensure UTF-8 output in Windows terminal
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
 bot_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(bot_root))
 
 from repo_router import get_available_repos, load_repo_context, detect_repo_by_keywords
+from bot import generate_ollama_response, load_skill_context
 
-def test_routing():
+async def test_all():
     print("--- 1. Available Repositories ---")
     repos = get_available_repos()
     print("Discovered repos:", repos)
@@ -25,9 +31,31 @@ def test_routing():
     for repo in repos:
         ctx = load_repo_context(repo)
         print(f"Repo: {repo} | Context length: {len(ctx)} chars")
-        if ctx:
-            first_lines = "\n".join(ctx.splitlines()[:10])
-            print(f"Context snippet:\n{first_lines}\n")
+
+    print("\n--- 4. End-to-End Response Generation Test ---")
+    sample_repo = "SocialShareButton"
+    sample_query = "How do I install dependencies for SocialShareButton?"
+    repo_context = load_repo_context(sample_repo)
+
+    print(f"Target Repo: {sample_repo}")
+    print(f"User Query: '{sample_query}'")
+    print("Sending request to Ollama...")
+
+    response, fallback = await generate_ollama_response(sample_query, repo_context)
+    print(f"\nOllama Response (fallback={fallback}):\n")
+    print(response)
+
+    print("\n--- 5. Unrouted Query Fallback Test ---")
+    unrouted_query = "Tell me a joke about bananas"
+    skill_context = load_skill_context()
+    fallback_prompt = (
+        f"The user asked: '{unrouted_query}'. "
+        f"No specific repository was matched from available projects ({', '.join(repos)}). "
+        f"Politely ask the user which project they need help with or clarify their request."
+    )
+    fallback_response, _ = await generate_ollama_response(fallback_prompt, skill_context)
+    print(f"Unrouted Query: '{unrouted_query}'")
+    print(f"Bot Guardrail Clarification Response:\n{fallback_response}")
 
 if __name__ == "__main__":
-    test_routing()
+    asyncio.run(test_all())

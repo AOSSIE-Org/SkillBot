@@ -42,7 +42,7 @@ client = discord.Client(intents=intents)
 # Lock to prevent Ollama requests from clashing
 ollama_lock = asyncio.Lock()
 
-THREAD_HISTORY_LIMIT = 10  # messages to pull from thread as conversation context
+THREAD_HISTORY_LIMIT = 4  # Pull up to 3-4 preceding messages for immediate context in threads
 
 
 def clean_bot_mention(content: str) -> str:
@@ -150,28 +150,31 @@ async def generate_ollama_response(prompt: str, context: str) -> tuple[str, bool
     return "I'm sorry, the local AI model is currently unavailable. Please try again later or ask a maintainer.", True
 
 
-async def _build_conversation_context(thread: discord.Thread, current_author: discord.User, current_query: str) -> str:
-    """Pull recent thread history and format it as conversation context for Ollama."""
+async def _build_conversation_context(thread: discord.Thread, current_author: discord.User, current_query: str, current_msg_id: int | None = None) -> str:
+    """Pull up to 3-4 preceding messages for thread context, prioritizing the tagged current query."""
     history_parts = []
     try:
         async for msg in thread.history(limit=THREAD_HISTORY_LIMIT, oldest_first=True):
+            if current_msg_id and msg.id == current_msg_id:
+                continue
             content_cleaned = clean_bot_mention(msg.content)
+            if not content_cleaned:
+                continue
             if msg.author.bot:
-                history_parts.append(f"Bot: {content_cleaned[:300]}")
+                history_parts.append(f"Bot: {content_cleaned[:250]}")
             else:
-                history_parts.append(f"{msg.author.display_name}: {content_cleaned[:300]}")
+                history_parts.append(f"{msg.author.display_name}: {content_cleaned[:250]}")
     except Exception as e:
         logger.error(f"Error fetching thread history for {thread.id}: {e}")
 
-    if not history_parts:
-        return ""
-
     current_query_cleaned = clean_bot_mention(current_query)
-    return (
-        "Previous conversation in this thread:\n" +
-        "\n".join(history_parts) +
-        f"\n\nCurrent question from {current_author.display_name}: {current_query_cleaned}"
-    )
+    if history_parts:
+        return (
+            "Immediate preceding context (last 3-4 messages):\n" +
+            "\n".join(history_parts[-4:]) +
+            f"\n\nPRIMARY TAGGED QUESTION (from {current_author.display_name}): {current_query_cleaned}"
+        )
+    return current_query_cleaned
 
 
 async def _get_or_create_thread(
@@ -363,16 +366,16 @@ async def process_message(message: discord.Message):
             )
 
         try:
-            # Load ONLY repository-specific context (no .clinerules after repo identification)
-            repo_context = load_repo_context(mapped_repo)
+            # Load ONLY repository-specific context dynamically based on query intent
+            repo_context = load_repo_context(mapped_repo, cleaned_query)
 
-            conversation_context = await _build_conversation_context(
-                thread, author, cleaned_query
-            )
-
-            if conversation_context:
-                full_prompt = conversation_context
+            if is_in_thread:
+                # Inside threads: pull up to 3-4 preceding messages + primary tagged message
+                full_prompt = await _build_conversation_context(
+                    thread, author, cleaned_query, message.id
+                )
             else:
+                # Initial message in channel: no history, prompt is the tagged query
                 full_prompt = cleaned_query
 
             response_text, used_fallback = await generate_ollama_response(

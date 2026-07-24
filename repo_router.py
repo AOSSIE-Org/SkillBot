@@ -121,58 +121,95 @@ async def classify_repo_with_llm(
     return None
 
 
-def load_repo_context(repo_name: str) -> str:
-    """Load and combine context from the target repository to guide the local LLM."""
+def load_repo_context(repo_name: str, query: str = "") -> str:
+    """Dynamically load and combine relevant context from the target repository based on query intent."""
     context_parts = []
     repo_path = get_repo_path(repo_name)
     if not repo_path:
         return ""
 
     context_parts.append(f"=== REPOSITORY: {repo_name} ===")
+    q = query.lower()
 
-    # 1. Load local AGENTS.md
-    agents_md = repo_path / "AGENTS.md"
-    if agents_md.exists():
-        try:
-            with open(agents_md, "r", encoding="utf-8") as f:
-                context_parts.append(f"--- AGENTS.md ---\n{f.read()}")
-        except Exception as e:
-            logger.error(f"Error reading {agents_md}: {e}")
-
-    # 2. Load all .md files in .agent/ recursively
     agent_dir = repo_path / ".agent"
     if agent_dir.exists():
-        for md_file in sorted(agent_dir.rglob("*.md")):
-            rel_path = md_file.relative_to(repo_path)
+        # 1. Operational Data (.agent/info/operational-data.md)
+        ops_md = agent_dir / "info" / "operational-data.md"
+        if ops_md.exists():
             try:
-                with open(md_file, "r", encoding="utf-8") as f:
-                    context_parts.append(f"--- Instructions: {rel_path} ---\n{f.read()}")
+                with open(ops_md, "r", encoding="utf-8") as f:
+                    context_parts.append(f"--- Operational Data (.agent/info/operational-data.md) ---\n{f.read()}")
             except Exception as e:
-                logger.error(f"Error reading instruction file {md_file}: {e}")
+                logger.error(f"Error reading operational data file {ops_md}: {e}")
 
-    # 3. Load README.md if present
-    readme_md = repo_path / "README.md"
-    if readme_md.exists():
-        try:
-            with open(readme_md, "r", encoding="utf-8") as f:
-                content = f.read()
-                # Excerpt up to 2000 chars if long
-                excerpt = content[:2000] + ("\n... (truncated)" if len(content) > 2000 else "")
-                context_parts.append(f"--- README.md ---\n{excerpt}")
-        except Exception as e:
-            logger.error(f"Error reading {readme_md}: {e}")
+        # 3. DYNAMIC / CORE: Core Architecture (.agent/core/architecture.md)
+        arch_keywords = ["arch", "architecture", "structure", "design", "component", "wrapper", "how it works", "flow", "pattern", "code", "file"]
+        if not q or any(kw in q for kw in arch_keywords):
+            arch_md = agent_dir / "core" / "architecture.md"
+            if arch_md.exists():
+                try:
+                    with open(arch_md, "r", encoding="utf-8") as f:
+                        context_parts.append(f"--- Core Architecture (.agent/core/architecture.md) ---\n{f.read()}")
+                except Exception as e:
+                    logger.error(f"Error reading architecture file {arch_md}: {e}")
 
-    # 4. Load local skills
+        # 4. DYNAMIC LOAD: Instructions based on query intent (.agent/instructions/*.md)
+        inst_dir = agent_dir / "instructions"
+        if inst_dir.exists():
+            setup_keywords = ["setup", "install", "build", "run", "env", "environment", "dependency", "dependencies", "npm", "yarn", "pnpm", "start", "dev"]
+            testing_keywords = ["test", "testing", "jest", "spec", "coverage", "assert", "check"]
+            deploy_keywords = ["deploy", "deployment", "ci", "cd", "release", "action", "workflow", "publish"]
+
+            for md_file in sorted(inst_dir.glob("*.md")):
+                fname = md_file.stem.lower()
+                should_load = False
+
+                if not q:
+                    should_load = (fname == "setup")
+                else:
+                    if fname == "setup" and any(kw in q for kw in setup_keywords):
+                        should_load = True
+                    elif fname in ["testing", "test"] and any(kw in q for kw in testing_keywords):
+                        should_load = True
+                    elif fname in ["deployment", "ci-cd", "ci_cd"] and any(kw in q for kw in deploy_keywords):
+                        should_load = True
+                    elif fname in q:
+                        should_load = True
+
+                if should_load:
+                    rel_path = md_file.relative_to(repo_path)
+                    try:
+                        with open(md_file, "r", encoding="utf-8") as f:
+                            context_parts.append(f"--- Instruction ({rel_path}) ---\n{f.read()}")
+                    except Exception as e:
+                        logger.error(f"Error reading instruction file {md_file}: {e}")
+
+    # 5. DYNAMIC LOAD: Local skills (skills/**/SKILL.md)
     skills_dir = repo_path / "skills"
     if skills_dir.exists():
         for skill_file in sorted(skills_dir.rglob("**/SKILL.md")):
+            skill_name = skill_file.parent.name.lower()
+            if not q or skill_name in q:
+                try:
+                    with open(skill_file, "r", encoding="utf-8") as f:
+                        context_parts.append(
+                            f"--- Local Skill ({skill_file.parent.name}) ---\n{f.read()}"
+                        )
+                except Exception as e:
+                    logger.error(f"Error reading {skill_file}: {e}")
+
+    # 6. DYNAMIC LOAD: README.md if query asks for overview/readme
+    readme_keywords = ["readme", "overview", "about", "description", "what is"]
+    if not q or any(kw in q for kw in readme_keywords):
+        readme_md = repo_path / "README.md"
+        if readme_md.exists():
             try:
-                with open(skill_file, "r", encoding="utf-8") as f:
-                    context_parts.append(
-                        f"--- Local Skill: {skill_file.parent.name} ---\n{f.read()}"
-                    )
+                with open(readme_md, "r", encoding="utf-8") as f:
+                    content = f.read()
+                    excerpt = content[:1500] + ("\n... (truncated)" if len(content) > 1500 else "")
+                    context_parts.append(f"--- README.md ---\n{excerpt}")
             except Exception as e:
-                logger.error(f"Error reading {skill_file}: {e}")
+                logger.error(f"Error reading {readme_md}: {e}")
 
     return "\n\n".join(context_parts)
 

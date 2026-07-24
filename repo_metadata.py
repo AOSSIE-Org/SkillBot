@@ -1,6 +1,6 @@
 REPO_METADATA = {
     "SocialShareButton": {
-        "url": "https://github.com/AOSSIE-Org/SocialShareButton",
+        "url": "https://github.com/kpj2006/SocialShareButton/tree/matt-skills",
         "description": "Lightweight social sharing component for web applications",
         "keywords": [
             "social",
@@ -23,7 +23,7 @@ REPO_METADATA = {
         ],
     },
     "OrgExplorer": {
-        "url": "https://github.com/AOSSIE-Org/OrgExplorer",
+        "url": "https://github.com/kpj2006/OrgExplorer/tree/skills",
         "description": "Real-time analytics and insights for GitHub organizations",
         "keywords": [
             "dashboard",

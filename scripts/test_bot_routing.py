@@ -27,15 +27,21 @@ async def test_all():
         detected = detect_repo_by_keywords(q, repos)
         print(f"Query: '{q}' -> Detected: {detected}")
 
-    print("\n--- 3. Repository Context Loading Test ---")
-    for repo in repos:
-        ctx = load_repo_context(repo)
-        print(f"Repo: {repo} | Context length: {len(ctx)} chars")
+    print("\n--- 3. Dynamic Query Context Loading Test ---")
+    intents = [
+        ("Who is the maintainer of SocialShareButton?", "SocialShareButton"),
+        ("How do I install dependencies and setup SocialShareButton?", "SocialShareButton"),
+        ("What is the architecture and design of SocialShareButton?", "SocialShareButton"),
+        ("How do I run tests for SocialShareButton?", "SocialShareButton"),
+    ]
+    for query_str, target_repo in intents:
+        ctx = load_repo_context(target_repo, query_str)
+        print(f"Query: '{query_str}' -> Loaded context length: {len(ctx)} chars")
 
     print("\n--- 4. End-to-End Response Generation Test ---")
     sample_repo = "SocialShareButton"
     sample_query = "How do I install dependencies for SocialShareButton?"
-    repo_context = load_repo_context(sample_repo)
+    repo_context = load_repo_context(sample_repo, sample_query)
 
     print(f"Target Repo: {sample_repo}")
     print(f"User Query: '{sample_query}'")

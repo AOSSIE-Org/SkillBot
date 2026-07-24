@@ -1,7 +1,0 @@
-- [x] Ritik submits PR of his prototype to this repo. (Ritik)
-- [ ] Merge Ritik's PR. (Bruno)
-- [x] Close stale PRs. (Rahul)
-- [ ] Create logo for OrgExplorer.
-- [ ] Update ReadMe. (Rahul (concept) + Ritik (technical instructions))
-- [ ] Deploy OrgExplorer to GitHub pages. (Bruno)
-- [ ] Add OrgExplorer to https://aossie.org. (Rahul or Ritik)

@@ -1,7 +1,8 @@
 import os
+import re
 import sys
-import subprocess
 import logging
+import httpx
 from pathlib import Path
 
 # Add parent directory to sys.path to import repo_metadata
@@ -14,116 +15,73 @@ from repo_metadata import REPO_METADATA
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("subtree-sync")
 
-
-def run_command(cmd: list[str], cwd: Path) -> tuple[int, str]:
-    """Run a shell command and return returncode and output."""
-    logger.info(f"Running: {' '.join(cmd)}")
-    result = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True)
-    if result.returncode != 0:
-        logger.error(f"Command failed with code {result.returncode}:\n{result.stderr}")
-    else:
-        logger.info(result.stdout.strip())
-    return result.returncode, result.stdout + result.stderr
-
-
-def get_head_commit() -> str:
-    """Get the current HEAD commit hash."""
-    code, out = run_command(["git", "rev-parse", "HEAD"], bot_root)
-    return out.strip() if code == 0 else ""
+# Key context files to sync from remote client repositories
+KNOWN_CONTEXT_FILES = [
+    ".agent/info/operational-data.md",
+    ".agent/core/architecture.md",
+    ".agent/instructions/setup.md",
+    ".agent/instructions/testing.md",
+    ".agent/instructions/deployment.md",
+    "AGENTS.md",
+    "README.md",
+]
 
 
-def has_context_changes(old_commit: str, new_commit: str, prefix: str) -> bool:
-    """Check if AGENTS.md or .agent/ in prefix has non-zero line changes between commits."""
-    cmd = [
-        "git",
-        "diff",
-        "--numstat",
-        old_commit,
-        new_commit,
-        "--",
-        f"{prefix}/AGENTS.md",
-        f"{prefix}/.agent",
-    ]
-    code, out = run_command(cmd, bot_root)
-    if code != 0 or not out.strip():
-        return False
-
-    total_changes = 0
-    for line in out.strip().splitlines():
-        parts = line.split()
-        if len(parts) >= 2:
-            try:
-                added = int(parts[0]) if parts[0] != "-" else 0
-                deleted = int(parts[1]) if parts[1] != "-" else 0
-                total_changes += (added + deleted)
-            except ValueError:
-                pass
-    return total_changes > 0
+def parse_github_url(url: str) -> tuple[str, str, str]:
+    """Parse owner, repo, and ref from GitHub URL."""
+    match = re.match(r"https://github\.com/([^/]+)/([^/]+)(?:/tree/([^/]+))?", url)
+    if match:
+        owner, repo, ref = match.groups()
+        repo = repo.removesuffix(".git")
+        ref = ref or "main"
+        return owner, repo, ref
+    return "", "", "main"
 
 
-def sync_subtrees():
+def sync_repo_context(repo_name: str, meta: dict, client: httpx.Client):
+    """Fetch specified .agent context files directly from raw GitHub endpoint."""
+    url = meta.get("url")
+    if not url:
+        logger.warning(f"No URL defined for {repo_name}, skipping.")
+        return
+
+    owner, repo, ref = parse_github_url(url)
+    if not owner or not repo:
+        logger.error(f"Invalid GitHub URL for {repo_name}: {url}")
+        return
+
+    logger.info(f"Syncing context for '{repo_name}' ({owner}/{repo}@{ref})...")
+    target_dir = bot_root / "repos" / repo_name
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    headers = {"User-Agent": "SkillBot-Context-Sync"}
+    downloaded_count = 0
+
+    for rel_file in KNOWN_CONTEXT_FILES:
+        raw_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{ref}/{rel_file}"
+        try:
+            res = client.get(raw_url, headers=headers)
+            if res.status_code == 200:
+                dest_path = target_dir / rel_file
+                dest_path.parent.mkdir(parents=True, exist_ok=True)
+                dest_path.write_bytes(res.content)
+                logger.info(f"Downloaded: repos/{repo_name}/{rel_file}")
+                downloaded_count += 1
+        except Exception as e:
+            logger.debug(f"Failed downloading {rel_file} for {repo_name}: {e}")
+
+    logger.info(f"Synced {downloaded_count} context files into repos/{repo_name}")
+
+
+def sync_all_subtrees():
     os.chdir(bot_root)
     repos_dir = bot_root / "repos"
     repos_dir.mkdir(exist_ok=True)
 
-    for repo_name, meta in REPO_METADATA.items():
-        url = meta.get("url")
-        if not url:
-            logger.warning(f"No URL defined for {repo_name}, skipping.")
-            continue
-
-        git_url = url if url.endswith(".git") else f"{url}.git"
-        prefix = f"repos/{repo_name}"
-        prefix_path = bot_root / prefix
-        is_new_subtree = not (prefix_path.exists() and any(prefix_path.iterdir()))
-
-        if not is_new_subtree:
-            logger.info(f"Subtree '{prefix}' exists. Pulling updates from {git_url}...")
-            cmd = [
-                "git",
-                "subtree",
-                "pull",
-                f"--prefix={prefix}",
-                git_url,
-                "main",
-                "--squash",
-                "-m",
-                f"sync: update {repo_name} subtree",
-            ]
-        else:
-            logger.info(f"Subtree '{prefix}' does not exist. Adding subtree from {git_url}...")
-            cmd = [
-                "git",
-                "subtree",
-                "add",
-                f"--prefix={prefix}",
-                git_url,
-                "main",
-                "--squash",
-                "-m",
-                f"sync: add {repo_name} subtree",
-            ]
-
-        old_head = get_head_commit()
-        code, out = run_command(cmd, bot_root)
-        if code == 0:
-            new_head = get_head_commit()
-            if old_head and new_head and old_head != new_head:
-                if is_new_subtree:
-                    logger.info(f"Subtree '{prefix}' newly added. Keeping initial commit.")
-                else:
-                    if not has_context_changes(old_head, new_head, prefix):
-                        logger.info(
-                            f"No non-zero line changes in AGENTS.md or .agent/ for {repo_name}. Resetting commit."
-                        )
-                        run_command(["git", "reset", "--hard", old_head], bot_root)
-                    else:
-                        logger.info(
-                            f"Non-zero line changes confirmed in AGENTS.md or .agent/ for {repo_name}. Keeping commit."
-                        )
-        else:
-            logger.error(f"Failed to sync subtree for {repo_name}")
+    with httpx.Client(timeout=20.0, follow_redirects=True) as client:
+        for repo_name, meta in REPO_METADATA.items():
+            sync_repo_context(repo_name, meta, client)
 
 
 if __name__ == "__main__":
-    sync_subtrees()
+    sync_all_subtrees()

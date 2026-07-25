@@ -487,15 +487,29 @@ async def on_ready():
 
         messages_to_process = []
         if last_bot_msg:
-            async for msg in channel.history(after=last_bot_msg, oldest_first=True):
-                if not msg.author.bot:
-                    messages_to_process.append(msg)
+            candidate_messages = [m async for m in channel.history(after=last_bot_msg, oldest_first=True) if not m.author.bot]
         else:
-            async for msg in channel.history(limit=5, oldest_first=True):
-                if not msg.author.bot:
-                    messages_to_process.append(msg)
+            candidate_messages = [m async for m in channel.history(limit=10, oldest_first=True) if not m.author.bot]
 
-        logger.info(f"Found {len(messages_to_process)} missed messages. Processing...")
+        for msg in candidate_messages:
+            already_answered = False
+            if msg.flags.has_thread:
+                try:
+                    thread = msg.guild.get_thread(msg.id) if msg.guild else None
+                    if not thread:
+                        thread = await client.fetch_channel(msg.id)
+                    if isinstance(thread, discord.Thread):
+                        async for t_msg in thread.history(limit=15):
+                            if t_msg.author.id == client.user.id:
+                                already_answered = True
+                                break
+                except Exception:
+                    pass
+
+            if not already_answered:
+                messages_to_process.append(msg)
+
+        logger.info(f"Found {len(messages_to_process)} un-answered missed messages. Processing...")
         for msg in messages_to_process:
             await process_message(msg)
 

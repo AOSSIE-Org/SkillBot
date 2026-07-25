@@ -131,7 +131,7 @@ async def generate_ollama_response(prompt: str, context: str) -> tuple[str, bool
             if e.response.status_code == 404:
                 err_msg = (
                     f"I'm sorry, the local Ollama model '{OLLAMA_MODEL}' was not found (HTTP 404).\n"
-                    f"Please contact @kpj2006 or run `ollama pull {OLLAMA_MODEL}` on your machine."
+                    f"Please contact @karunpacholi0408 , @b.wp or run `ollama pull {OLLAMA_MODEL}` on your machine."
                 )
                 return err_msg, True
             elif 400 <= e.response.status_code < 500:
@@ -211,13 +211,13 @@ async def _get_or_create_thread(
 
     try:
         author = message.author
-        cleaned_title = clean_bot_mention(message.content)[:50]
+        thread_name = f"{thread_prefix} | {author.display_name} — skill-bot chat"
         thread = await message.create_thread(
-            name=f"{thread_prefix} Q&A — {author.display_name}: {cleaned_title}",
+            name=thread_name[:100],
             auto_archive_duration=1440,  # 24 hours
         )
         logger.info(
-            f"Created thread {thread.id} for {author.name} — query: {cleaned_title}"
+            f"Created thread '{thread.name}' (ID: {thread.id}) for {author.name}"
         )
         return thread
     except discord.Forbidden:
@@ -245,7 +245,7 @@ async def _get_or_create_thread(
 def is_query_covered(query: str) -> bool:
     """Check if the query contains keywords covered in .clinerules using word boundaries."""
     q = query.lower()
-    
+
     # Predefined keyword maps based on .clinerules
     categories = {
         "setup": ["setup", "install", "run", "build", "clone", "docker", "env", "start", "dev server", "npm run dev"],
@@ -253,7 +253,7 @@ def is_query_covered(query: str) -> bool:
         "contribute": ["contribute", "contributor", "fork", "pr", "pull request", "issue", "branch", "git", "onboarding"],
         "error": ["error", "exception", "bug", "fail", "crash", "issue", "logs", "broken", "debug", "not working"]
     }
-    
+
     for cat, keywords in categories.items():
         for kw in keywords:
             # Use raw pattern and re.escape for safety, matching word boundaries for the keyword/phrase
@@ -288,23 +288,46 @@ async def process_message(message: discord.Message):
 
     available_repos = get_available_repos()
 
+    logger.info("==================================================")
+    logger.info(f"📥 RECEIVED MESSAGE from '{author.display_name}' ({author.name})")
+    logger.info(f"📍 Location: {'Thread' if is_in_thread else 'Channel'} -> '{message.channel.name}' (ID: {message.channel.id})")
+    logger.info(f"💬 Query: \"{cleaned_query or '(bot mention only)'}\"")
+    logger.info(f"🔍 Discovered Available Projects: {available_repos}")
+
+    match_method = None
+    mapped_repo = None
+
     if is_in_thread:
         thread = message.channel
         if thread.archived or thread.locked:
             logger.warning(f"Thread {thread.id} is archived/locked — cannot respond")
             return
         mapped_repo = get_repo_from_thread_name(thread.name, available_repos)
+        if mapped_repo:
+            match_method = f"Thread Name ('{thread.name}')"
 
-        # If not mapped yet, try to detect it from the query
+        # If not mapped yet, try query keywords or thread history keywords
         if not mapped_repo:
             detected_repo = detect_repo_by_keywords(cleaned_query, available_repos)
+            if detected_repo:
+                match_method = "Query Keywords"
+            else:
+                # Check recent thread history text if query itself was short or a simple tag
+                recent_ctx = await _build_conversation_context(thread, author, cleaned_query, message.id)
+                detected_repo = detect_repo_by_keywords(recent_ctx, available_repos)
+                if detected_repo:
+                    match_method = "Recent Thread History Keywords"
+
             if not detected_repo:
+                logger.info("🤖 Calling Ollama LLM classifier to determine target project...")
                 detected_repo = await classify_repo_with_llm(
                     cleaned_query, available_repos, OLLAMA_MODEL, OLLAMA_URL
                 )
+                if detected_repo:
+                    match_method = "LLM Classifier"
 
             if detected_repo:
-                new_name = thread.name.replace("Unassigned", detected_repo)
+                new_name = thread.name.replace("[Unassigned]", f"[{detected_repo}]").replace("Unassigned", detected_repo)
                 try:
                     await thread.edit(name=new_name[:100])
                     logger.info(f"Renamed thread {thread.id} to: {new_name}")
@@ -314,10 +337,15 @@ async def process_message(message: discord.Message):
     else:
         # Check if we can detect the repository from the initial message
         detected_repo = detect_repo_by_keywords(cleaned_query, available_repos)
-        if not detected_repo:
+        if detected_repo:
+            match_method = "Query Keywords"
+        else:
+            logger.info("🤖 Calling Ollama LLM classifier for initial message...")
             detected_repo = await classify_repo_with_llm(
                 cleaned_query, available_repos, OLLAMA_MODEL, OLLAMA_URL
             )
+            if detected_repo:
+                match_method = "LLM Classifier"
 
         channel = message.channel
         thread_prefix = detected_repo if detected_repo else "Unassigned"
@@ -335,6 +363,7 @@ async def process_message(message: discord.Message):
 
     # If repository is still not determined, request clarification using .clinerules skill context
     if not mapped_repo:
+        logger.info("❓ UNMAPPED QUERY: Could not determine target project. Requesting clarification...")
         skill_context = load_skill_context()
         if skill_context:
             fallback_prompt = (
@@ -345,15 +374,20 @@ async def process_message(message: discord.Message):
             response_text, _ = await generate_ollama_response(fallback_prompt, skill_context)
             try:
                 await thread.send(response_text)
+                logger.info("📤 Clarification response sent to thread successfully [HTTP 200 OK]")
             except Exception as e:
                 logger.error(f"Error sending fallback clarification to thread {thread.id}: {e}")
         else:
             await send_clarification_request(thread, available_repos)
+            logger.info("📤 Default project list clarification sent to thread [HTTP 200 OK]")
 
         await _log_gap(
             cleaned_query, "repo_clarification_needed", thread_id=thread.id
         )
+        logger.info("==================================================")
         return
+
+    logger.info(f"✅ MAPPED PROJECT: '{mapped_repo}' (via {match_method})")
 
     async with ollama_lock:
         try:
@@ -368,6 +402,8 @@ async def process_message(message: discord.Message):
         try:
             # Load ONLY repository-specific context dynamically based on query intent
             repo_context = load_repo_context(mapped_repo, cleaned_query)
+            context_files = [line for line in repo_context.splitlines() if line.startswith("--- ")]
+            logger.info(f"📄 LOADED CONTEXT ({len(context_files)} sections): {context_files or ['Base Overview']}")
 
             if is_in_thread:
                 # Inside threads: pull up to 3-4 preceding messages + primary tagged message
@@ -378,6 +414,7 @@ async def process_message(message: discord.Message):
                 # Initial message in channel: no history, prompt is the tagged query
                 full_prompt = cleaned_query
 
+            logger.info(f"🚀 DELEGATING TO OLLAMA LLM ({OLLAMA_MODEL})...")
             response_text, used_fallback = await generate_ollama_response(
                 full_prompt, repo_context
             )
@@ -385,6 +422,8 @@ async def process_message(message: discord.Message):
             # Prefix response with the active repository context header
             if not response_text.startswith("According to the"):
                 response_text = f"According to the {mapped_repo} repository context:\n\n{response_text}"
+
+            logger.info(f"✨ LLM RESPONSE GENERATED [HTTP 200 OK] — Output length: {len(response_text)} chars")
 
             if used_fallback or not repo_context:
                 await _log_gap(
@@ -402,9 +441,6 @@ async def process_message(message: discord.Message):
             await _log_gap(
                 cleaned_query, f"processing_error: {e}", thread_id=thread.id
             )
-
-        if len(response_text) > 1900:
-            response_text = response_text[:1896] + "..."
 
         try:
             await thread.send(response_text)

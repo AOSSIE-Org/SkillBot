@@ -10,11 +10,11 @@ from repo_metadata import REPO_METADATA
 
 
 def get_repo_details(repo_name: str) -> dict:
-    """Get metadata for a repository, with fallback default values."""
+    """Get metadata for a repository directly from REPO_METADATA."""
     return REPO_METADATA.get(
         repo_name,
         {
-            "url": f"https://github.com/AOSSIE-Org/{repo_name}",
+            "url": "",
             "description": f"AOSSIE project: {repo_name}",
             "keywords": [repo_name.lower()],
         },
@@ -24,34 +24,30 @@ def get_repo_details(repo_name: str) -> dict:
 def get_repo_from_thread_name(
     thread_name: str, available_repos: list[str]
 ) -> str | None:
-    """Check if any available repo name is in the thread name (case-insensitive)."""
+    """Check if thread_name matches a repo name OR any of its keywords from REPO_METADATA."""
+    norm_thread = re.sub(r"[\s\-_]", "", thread_name.lower())
+    t_lower = thread_name.lower()
+
     for repo in available_repos:
-        if repo.lower() in thread_name.lower():
+        # 1. Match against repository key name (normalized)
+        norm_repo = re.sub(r"[\s\-_]", "", repo.lower())
+        if norm_repo and (norm_repo in norm_thread or norm_thread in norm_repo):
             return repo
+
+        # 2. Match against keywords in REPO_METADATA for this repo
+        details = get_repo_details(repo)
+        for kw in details.get("keywords", []):
+            kw_lower = kw.lower()
+            kw_norm = re.sub(r"[\s\-_]", "", kw_lower)
+            if kw_lower in t_lower or (len(kw_norm) > 3 and kw_norm in norm_thread):
+                return repo
+
     return None
 
 
 def get_available_repos() -> list[str]:
-    """Dynamically discover available client repositories in subtrees or workspace."""
-    search_dirs = [Path("repos"), Path("."), Path("..")]
-    repos = set()
-
-    for base_dir in search_dirs:
-        if not base_dir.exists():
-            continue
-        for item in base_dir.iterdir():
-            if item.is_dir():
-                if item.name in ["SkillBot", "skills", "repos"] or item.name.startswith("."):
-                    continue
-                if (
-                    (item / "AGENTS.md").exists()
-                    or (item / ".agent").exists()
-                    or (item / ".clinerules").exists()
-                    or (item / ".git").exists()
-                ):
-                    repos.add(item.name)
-
-    return sorted(list(repos))
+    """Return available client repositories strictly from REPO_METADATA."""
+    return sorted(list(REPO_METADATA.keys()))
 
 
 def get_repo_path(repo_name: str) -> Path | None:
@@ -68,13 +64,20 @@ def get_repo_path(repo_name: str) -> Path | None:
 
 
 def detect_repo_by_keywords(query: str, available_repos: list[str]) -> str | None:
-    """Detect matching repository based on case-insensitive keyword mappings."""
-    q = query.lower()
+    """Detect matching repository based on case-insensitive keyword mappings and normalization."""
+    q_lower = query.lower()
+    q_norm = re.sub(r"[\s\-_]", "", q_lower)
 
     for repo in available_repos:
+        norm_repo = re.sub(r"[\s\-_]", "", repo.lower())
+        if norm_repo and norm_repo in q_norm:
+            return repo
+
         details = get_repo_details(repo)
         for kw in details["keywords"]:
-            if kw in q:
+            kw_lower = kw.lower()
+            kw_norm = re.sub(r"[\s\-_]", "", kw_lower)
+            if kw_lower in q_lower or (len(kw_norm) > 3 and kw_norm in q_norm):
                 return repo
     return None
 
@@ -122,7 +125,8 @@ async def classify_repo_with_llm(
 
 
 def load_repo_context(repo_name: str, query: str = "") -> str:
-    """Dynamically load and combine relevant context from the target repository based on query intent."""
+    """Dynamically load context: ALWAYS load operational-data.md and architecture.md,
+    and dynamically load specific instruction/core files based on user query intent."""
     context_parts = []
     repo_path = get_repo_path(repo_name)
     if not repo_path:
@@ -133,7 +137,7 @@ def load_repo_context(repo_name: str, query: str = "") -> str:
 
     agent_dir = repo_path / ".agent"
     if agent_dir.exists():
-        # 1. Operational Data (.agent/info/operational-data.md)
+        # 1. ALWAYS LOAD: Operational Data (.agent/info/operational-data.md)
         ops_md = agent_dir / "info" / "operational-data.md"
         if ops_md.exists():
             try:
@@ -142,18 +146,46 @@ def load_repo_context(repo_name: str, query: str = "") -> str:
             except Exception as e:
                 logger.error(f"Error reading operational data file {ops_md}: {e}")
 
-        # 3. DYNAMIC / CORE: Core Architecture (.agent/core/architecture.md)
-        arch_keywords = ["arch", "architecture", "structure", "design", "component", "wrapper", "how it works", "flow", "pattern", "code", "file"]
-        if not q or any(kw in q for kw in arch_keywords):
-            arch_md = agent_dir / "core" / "architecture.md"
-            if arch_md.exists():
-                try:
-                    with open(arch_md, "r", encoding="utf-8") as f:
-                        context_parts.append(f"--- Core Architecture (.agent/core/architecture.md) ---\n{f.read()}")
-                except Exception as e:
-                    logger.error(f"Error reading architecture file {arch_md}: {e}")
+        # 2. ALWAYS LOAD: Core Architecture (.agent/core/architecture.md)
+        arch_md = agent_dir / "core" / "architecture.md"
+        if arch_md.exists():
+            try:
+                with open(arch_md, "r", encoding="utf-8") as f:
+                    context_parts.append(f"--- Core Architecture (.agent/core/architecture.md) ---\n{f.read()}")
+            except Exception as e:
+                logger.error(f"Error reading architecture file {arch_md}: {e}")
 
-        # 4. DYNAMIC LOAD: Instructions based on query intent (.agent/instructions/*.md)
+        # 3. DYNAMIC INTENT DETECTION: Core Files (code-mapping, edge-cases, examples)
+        core_dir = agent_dir / "core"
+        if core_dir.exists():
+            mapping_keywords = ["map", "mapping", "file", "path", "code-mapping", "location", "tree"]
+            edge_keywords = ["edge", "boundary", "limit", "edge-case", "fallback", "handling", "exception"]
+            example_keywords = ["example", "sample", "usage", "demo", "snippet", "how to use"]
+
+            for core_file in sorted(core_dir.glob("*.md")):
+                fname = core_file.stem.lower()
+                if fname == "architecture":
+                    continue  # Already loaded above
+
+                should_load = False
+                if fname in ["code-mapping", "code_mapping"] and any(kw in q for kw in mapping_keywords):
+                    should_load = True
+                elif fname in ["edge-cases", "edge_cases"] and any(kw in q for kw in edge_keywords):
+                    should_load = True
+                elif fname in ["examples", "example"] and any(kw in q for kw in example_keywords):
+                    should_load = True
+                elif fname in q:
+                    should_load = True
+
+                if should_load:
+                    rel_path = core_file.relative_to(repo_path)
+                    try:
+                        with open(core_file, "r", encoding="utf-8") as f:
+                            context_parts.append(f"--- Core Context ({rel_path}) ---\n{f.read()}")
+                    except Exception as e:
+                        logger.error(f"Error reading core file {core_file}: {e}")
+
+        # 4. DYNAMIC INTENT DETECTION: Instructions (.agent/instructions/*.md)
         inst_dir = agent_dir / "instructions"
         if inst_dir.exists():
             setup_keywords = ["setup", "install", "build", "run", "env", "environment", "dependency", "dependencies", "npm", "yarn", "pnpm", "start", "dev"]
@@ -184,7 +216,7 @@ def load_repo_context(repo_name: str, query: str = "") -> str:
                     except Exception as e:
                         logger.error(f"Error reading instruction file {md_file}: {e}")
 
-    # 5. DYNAMIC LOAD: Local skills (skills/**/SKILL.md)
+    # 5. DYNAMIC INTENT DETECTION: Local Skills (skills/**/SKILL.md)
     skills_dir = repo_path / "skills"
     if skills_dir.exists():
         for skill_file in sorted(skills_dir.rglob("**/SKILL.md")):
@@ -198,15 +230,15 @@ def load_repo_context(repo_name: str, query: str = "") -> str:
                 except Exception as e:
                     logger.error(f"Error reading {skill_file}: {e}")
 
-    # 6. DYNAMIC LOAD: README.md if query asks for overview/readme
-    readme_keywords = ["readme", "overview", "about", "description", "what is"]
+    # 6. DYNAMIC INTENT DETECTION: README.md
+    readme_keywords = ["readme", "overview", "about", "description", "what is", "how", "help"]
     if not q or any(kw in q for kw in readme_keywords):
         readme_md = repo_path / "README.md"
         if readme_md.exists():
             try:
                 with open(readme_md, "r", encoding="utf-8") as f:
                     content = f.read()
-                    excerpt = content[:1500] + ("\n... (truncated)" if len(content) > 1500 else "")
+                    excerpt = content[:2000] + ("\n... (truncated)" if len(content) > 2000 else "")
                     context_parts.append(f"--- README.md ---\n{excerpt}")
             except Exception as e:
                 logger.error(f"Error reading {readme_md}: {e}")

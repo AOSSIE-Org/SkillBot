@@ -22,6 +22,13 @@ KNOWN_CONTEXT_FILES = [
     ".agent/instructions/setup.md",
     ".agent/instructions/testing.md",
     ".agent/instructions/deployment.md",
+    ".agent/instructions/format-guide.md",
+    ".agent/instructions/checklist.md",
+    ".agent/instructions/bad-patterns.md",
+    "references/checklist.md",
+    "references/format-guide.md",
+    "references/bad-patterns.md",
+    "SKILL.md",
     "AGENTS.md",
     "README.md",
 ]

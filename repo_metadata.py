@@ -33,4 +33,18 @@ REPO_METADATA = {
             "pull request dashboard",
         ],
     },
+    "GSoC-Proposal-Assistant": {
+        "url": "https://github.com/kpj2006/GSoC-Proposal-Assistant",
+        "description": "AOSSIE GSoC proposal drafting, reviewer checklist, and application guidance",
+        "keywords": [
+            "gsoc",
+            "proposal",
+            "application",
+            "proposal-assistant",
+            "gsoc-proposal-assistant",
+            "draft proposal",
+            "review proposal",
+            "proposal checklist",
+        ],
+    },
 }

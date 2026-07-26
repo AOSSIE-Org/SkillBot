@@ -5,6 +5,10 @@ on:
     - cron: '0 0 * * *'
   workflow_dispatch:
 
+concurrency:
+  group: sync-subtrees
+  cancel-in-progress: false
+
 permissions:
   contents: write
 
@@ -18,18 +22,25 @@ jobs:
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@<verified-full-commit-sha>
         with:
           python-version: '3.11'
+
+      - name: Install sync dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
 
       - name: Configure Git identity
         run: |
           git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.email "github-actions[bot]`@users.noreply.github.com`"
 
       - name: Sync subtrees
         run: python scripts/update_subtrees.py
 
       - name: Push updates
         run: |
-          git push origin main || echo "No changes to push"
+          git add repos
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: sync repository context"
+          fi
+          git push origin main

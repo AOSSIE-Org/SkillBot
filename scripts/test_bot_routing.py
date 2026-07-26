@@ -4,7 +4,8 @@ import io
 from pathlib import Path
 
 # Ensure UTF-8 output in Windows terminal
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+if sys.platform == "win32":
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 bot_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(bot_root))

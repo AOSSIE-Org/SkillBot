@@ -36,4 +36,8 @@ jobs:
 
       - name: Push updates
         run: |
-          git push origin main || echo "No changes to push"
+          git add repos
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: sync repository context"
+          fi
+          git push origin main

@@ -127,9 +127,10 @@ jobs:
           if marker not in content:
               print("⚠️ Warning: Auto-update marker not found in BestPracticesChecklist.md")
 
+          formatted_table = f"\n\n{table.strip()}\n\n"
           new_content = re.sub(
-              r'(?<=<!-- Auto-updated by checklist-score\.yml workflow — do not edit manually -->\n).*?(?=\n---)',
-              table.strip(),
+              r'(?<=<!-- Auto-updated by checklist-score\.yml workflow — do not edit manually -->).*?(?=---)',
+              formatted_table,
               content,
               flags=re.DOTALL
           )

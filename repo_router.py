@@ -90,14 +90,14 @@ async def classify_repo_with_llm(
         return None
 
     prompt = (
-        f"You are a routing assistant. Based on the user's message, determine which project/repository they are talking about.\n"
-        f"Available repositories:\n"
+        "You are a routing assistant. Based on the user's message, determine which project/repository they are talking about.\n"
+        "Available repositories:\n"
         + "\n".join([f"- {r}" for r in available_repos])
         + "\n\n"
         f"User message: \"{query}\"\n\n"
-        f"Reply with ONLY the exact name of the repository from the list above. "
-        f"If the user is not referring to any specific repository, or if it is unclear, reply with 'none'. "
-        f"Do not include any explanation or other text."
+        "Reply with ONLY the exact name of the repository from the list above. "
+        "If the user is not referring to any specific repository, or if it is unclear, reply with 'none'. "
+        "Do not include any explanation or other text."
     )
 
     try:
@@ -119,7 +119,7 @@ async def classify_repo_with_llm(
                 if res_text.lower() == repo.lower():
                     return repo
     except Exception as e:
-        logger.error(f"Error classifying repository with LLM: {e}")
+        logger.exception(f"Error classifying repository with LLM: {e}")
 
     return None
 

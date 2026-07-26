@@ -18,7 +18,7 @@ REPO_METADATA = {
             "repo",
             "main",
             "template-repo-main",
-            "starters template",
+            "starter template",
             "template-repo",
         ],
     },

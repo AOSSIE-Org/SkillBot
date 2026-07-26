@@ -1,4 +1,4 @@
-# AOSSIE GSoC Proposal Assistant
+# GSoC Proposal Assistant
 
 Open with: 
 
@@ -14,7 +14,7 @@ Open with:
 The assistant works in two distinct modes depending on your progress:
 
 1.  **HELPER Mode:** If you are just starting or have a rough outline. The AI will ask you questions (project names, PR history, PoC links) to help you build a solid structured proposal from scratch.
-2.  **REVIEWER Mode:** If you already have a full draft. Paste your draft, and the AI will check it against AOSSIE's 2026 standards, giving you a structured review (Pass/Weak/Fail) and specific line-level feedback.
+2.  **REVIEWER Mode:** If you already have a full draft. Paste your draft, and the AI will check it against best pratices's 2026 standards, giving you a structured review (Pass/Weak/Fail) and specific line-level feedback.
 
 ---
 
@@ -33,3 +33,13 @@ contributor proceeds with drafting or pasting draft
         ↓
 done
 ```
+
+## NOTE
+
+It's designed primarily for Google Summer of Code, but the underlying Skills are reusable. As the project evolves, we'll extend it to other open-source internship and mentorship programs as well.
+
+One important point: this assistant does not guarantee selection. Every organization evaluates proposals differently, and there is no AI that can predict acceptance. The purpose is simply to help contributors structure their ideas more effectively and avoid common mistakes.
+
+As with any AI system, it can make mistakes. Always review its suggestions critically, and don't rely on it as the final authority.
+
+We also strongly discourage sharing personal, confidential, or sensitive information with any AI assistant. Only provide the information that's necessary for reviewing your proposal.

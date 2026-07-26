@@ -18,7 +18,7 @@ For every PR or code change, perform **manual browser testing**:
    - Navigate to the **Network Graph** page (`NetworkPage.jsx`) and verify D3 force graph nodes render, drag cleanly, and zoom.
    - Navigate to **Analytics** and check time-series activity charts (Recharts).
 3. **PAT & Rate Limit Modal:**
-   - Open `PATModal` from the header/settings, input a test token (or leave blank), and verify save/clear behavior.
+   - Open `PATModal` from the header/settings, input a disposable, least-privilege test token (or leave blank), and verify save/clear behavior. Never use production credentials, and strictly prohibit exposing tokens in screenshots, recordings, logs, or bug reports.
 4. **Theme Toggle:**
    - Toggle dark/light mode via `ThemeToggle` and verify all cards, tables, and modal backgrounds adjust without broken contrast.
 5. **DevTools Console Audit:**

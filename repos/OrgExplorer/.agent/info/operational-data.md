@@ -12,7 +12,7 @@
 ### Joining & Channel Link
 
 1. Join the AOSSIE Discord server via the **Discord Invite**: [https://discord.gg/hjUhu33uAn](https://discord.gg/hjUhu33uAn)
-2. Navigate directly to the **OrgExplorer project channel**: [AOSSIE Discord Channels](https://discord.com/channels/1022871757289422898) to post updates and discussions.
+2. Navigate directly to the **OrgExplorer project channel**: [AOSSIE Discord Channels](https://discord.com/channels/1022871757289422898/1465651557445144586) to post updates and discussions.
 
 ### Maintainers & Mentors
 

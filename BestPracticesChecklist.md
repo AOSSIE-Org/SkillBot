@@ -33,6 +33,15 @@
 | Reporting          | 8   | 8     | ✅     |
 | Quality            | 11   | 11     | ✅     |
 | Security           | 9   | 9     | ✅     |
+| Analysis           | 6   | 7     | 🟡     |
+| **Total**          | **48** | **49** | **98%** |
+
+--------------------|-----|-------|--------|
+| Basics             | 8   | 8     | ✅     |
+| Change Control     | 6   | 6     | ✅     |
+| Reporting          | 8   | 8     | ✅     |
+| Quality            | 11   | 11     | ✅     |
+| Security           | 9   | 9     | ✅     |
 | Analysis           | 6   | 7     | ✅     |
 | **Total**          | **48** | **49** | **98%** |
 

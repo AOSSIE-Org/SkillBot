@@ -243,7 +243,101 @@ def load_repo_context(repo_name: str, query: str = "") -> str:
             except Exception as e:
                 logger.error(f"Error reading {readme_md}: {e}")
 
+    # 7. DYNAMIC INTENT DETECTION: Org-Wide Skills (org-wide-skills/*/SKILL.md)
+    org_skills_dir = Path("org-wide-skills")
+    if not org_skills_dir.exists():
+        org_skills_dir = repo_path.parent.parent / "org-wide-skills"
+
+    if org_skills_dir.exists():
+        mcp_keywords = ["mcp", "github", "playwright", "puppeteer", "external link", "link", "pr", "issue", "http", "https", "browser", "ui test", "test ui"]
+        for skill_dir in org_skills_dir.iterdir():
+            if skill_dir.is_dir():
+                skill_file = skill_dir / "SKILL.md"
+                if skill_file.exists():
+                    s_name = skill_dir.name.lower()
+                    should_load_org_skill = False
+                    if s_name == "mcp-integration" and any(kw in q for kw in mcp_keywords):
+                        should_load_org_skill = True
+                    elif s_name in q:
+                        should_load_org_skill = True
+
+                    if should_load_org_skill:
+                        try:
+                            with open(skill_file, "r", encoding="utf-8") as f:
+                                context_parts.append(f"--- Org-Wide Skill ({skill_dir.name}) ---\n{f.read()}")
+                        except Exception as e:
+                            logger.error(f"Error reading org skill {skill_file}: {e}")
+
     return "\n\n".join(context_parts)
+
+
+async def fetch_github_link_info(url: str) -> str | None:
+    """Fetch GitHub PR or Issue details via GitHub REST API."""
+    match = re.search(r"https?://github\.com/([^/]+)/([^/]+)/(pull|issues)/(\d+)", url)
+    if not match:
+        return None
+
+    owner, repo, item_type_raw, number = match.groups()
+    item_type = "pulls" if item_type_raw == "pull" else "issues"
+    api_url = f"https://api.github.com/repos/{owner}/{repo}/{item_type}/{number}"
+
+    headers = {"User-Agent": "SkillBot", "Accept": "application/vnd.github.v3+json"}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            res = await client.get(api_url, headers=headers)
+            if res.status_code == 200:
+                data = res.json()
+                title = data.get("title", "No Title")
+                author = data.get("user", {}).get("login", "Unknown")
+                state = data.get("state", "unknown")
+                body = data.get("body") or ""
+                body_clean = body[:500].strip() + ("..." if len(body) > 500 else "")
+                is_pr = (item_type == "pulls")
+
+                info = (
+                    f"--- Fetched GitHub {'PR' if is_pr else 'Issue'} #{number} Details ---\n"
+                    f"URL: {data.get('html_url', url)}\n"
+                    f"Repository: {owner}/{repo}\n"
+                    f"Title: {title}\n"
+                    f"Author: {author}\n"
+                    f"State: {state}\n"
+                )
+                if is_pr and "merged" in data:
+                    info += f"Merged: {data.get('merged')}\n"
+                if body_clean:
+                    info += f"Description: {body_clean}\n"
+
+                return info
+            else:
+                logger.warning(f"GitHub API returned HTTP {res.status_code} for {api_url}")
+    except Exception as e:
+        logger.error(f"Error fetching GitHub link info for {url}: {e}")
+
+    return None
+
+
+async def extract_and_fetch_external_links(text: str) -> str:
+    """Extract URLs from text, fetch GitHub PR/Issue info, and return enriched context without duplicates."""
+    urls = re.findall(r"https?://[^\s>]+", text)
+    if not urls:
+        return ""
+
+    fetched_parts = []
+    seen_urls = set()
+    for url in urls:
+        normalized_url = url.rstrip("/")
+        if normalized_url in seen_urls:
+            continue
+        seen_urls.add(normalized_url)
+
+        if "github.com" in url and ("/pull/" in url or "/issues/" in url):
+            info = await fetch_github_link_info(url)
+            if info:
+                fetched_parts.append(info)
+
+    if fetched_parts:
+        return "\n".join(fetched_parts)
+    return ""
 
 
 async def send_clarification_request(

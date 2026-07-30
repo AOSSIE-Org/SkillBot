@@ -15,6 +15,7 @@ from repo_router import (
     classify_repo_with_llm,
     load_repo_context,
     send_clarification_request,
+    extract_and_fetch_external_links,
 )
 
 
@@ -102,10 +103,17 @@ def load_skill_context() -> str:
 
 async def generate_ollama_response(prompt: str, context: str) -> tuple[str, bool]:
     """Send prompt to local Ollama instance. Returns (response_text, used_llm_fallback)."""
+    base_instructions = (
+        "You are an expert open-source maintainer and contributor assistant for AOSSIE.\n"
+        "Guidelines:\n"
+        "- When evaluating GitHub PR or Issue links provided by users (e.g., 'is this correct?'), review the PR's title, author, description, and changes against the repository goals.\n"
+        "- Do NOT comment on trivial URL syntax or trailing slashes.\n"
+        "- Provide a helpful, constructive, and direct answer regarding the validity and content of the PR/issue.\n"
+    )
     if context:
-        system_prompt = f"You are a helpful contributor assistant for AOSSIE.\n\nContext guidelines:\n{context}"
+        system_prompt = f"{base_instructions}\nRepository Context & Guidelines:\n{context}"
     else:
-        system_prompt = "You are a helpful contributor assistant for AOSSIE."
+        system_prompt = base_instructions
 
     payload = {
         "model": OLLAMA_MODEL,
@@ -150,12 +158,23 @@ async def generate_ollama_response(prompt: str, context: str) -> tuple[str, bool
     return "I'm sorry, the local AI model is currently unavailable. Please try again later or ask a maintainer.", True
 
 
-async def _build_conversation_context(thread: discord.Thread, current_author: discord.User, current_query: str, current_msg_id: int | None = None) -> str:
-    """Pull up to 3-4 preceding messages for thread context, prioritizing the tagged current query."""
+async def _build_conversation_context(thread: discord.Thread, current_author: discord.User, current_query: str, current_msg: discord.Message | None = None) -> str:
+    """Pull up to 3-4 preceding messages for thread context, prioritizing the tagged current query and reply references."""
     history_parts = []
+
+    # Check if current message is replying to another message via Discord reference
+    if current_msg and current_msg.reference and current_msg.reference.message_id:
+        try:
+            ref_msg = await current_msg.channel.fetch_message(current_msg.reference.message_id)
+            if ref_msg:
+                ref_cleaned = clean_bot_mention(ref_msg.content)
+                history_parts.append(f"Replied-to Message (from {ref_msg.author.display_name}): {ref_cleaned}")
+        except Exception as e:
+            logger.warning(f"Failed to fetch referenced message {current_msg.reference.message_id}: {e}")
+
     try:
         async for msg in thread.history(limit=THREAD_HISTORY_LIMIT, oldest_first=True):
-            if current_msg_id and msg.id == current_msg_id:
+            if current_msg and msg.id == current_msg.id:
                 continue
             content_cleaned = clean_bot_mention(msg.content)
             if not content_cleaned:
@@ -170,8 +189,8 @@ async def _build_conversation_context(thread: discord.Thread, current_author: di
     current_query_cleaned = clean_bot_mention(current_query)
     if history_parts:
         return (
-            "Immediate preceding context (last 3-4 messages):\n" +
-            "\n".join(history_parts[-4:]) +
+            "Immediate preceding context (last 3-4 messages & reply target):\n" +
+            "\n".join(history_parts[-5:]) +
             f"\n\nPRIMARY TAGGED QUESTION (from {current_author.display_name}): {current_query_cleaned}"
         )
     return current_query_cleaned
@@ -313,7 +332,7 @@ async def process_message(message: discord.Message):
                 match_method = "Query Keywords"
             else:
                 # Check recent thread history text if query itself was short or a simple tag
-                recent_ctx = await _build_conversation_context(thread, author, cleaned_query, message.id)
+                recent_ctx = await _build_conversation_context(thread, author, cleaned_query, message)
                 detected_repo = detect_repo_by_keywords(recent_ctx, available_repos)
                 if detected_repo:
                     match_method = "Recent Thread History Keywords"
@@ -400,19 +419,29 @@ async def process_message(message: discord.Message):
             )
 
         try:
-            # Load ONLY repository-specific context dynamically based on query intent
-            repo_context = load_repo_context(mapped_repo, cleaned_query)
-            context_files = [line for line in repo_context.splitlines() if line.startswith("--- ")]
-            logger.info(f"📄 LOADED CONTEXT ({len(context_files)} sections): {context_files or ['Base Overview']}")
-
             if is_in_thread:
-                # Inside threads: pull up to 3-4 preceding messages + primary tagged message
+                # Inside threads: pull up to 3-4 preceding messages + reply targets + primary tagged message
                 full_prompt = await _build_conversation_context(
-                    thread, author, cleaned_query, message.id
+                    thread, author, cleaned_query, message
                 )
             else:
-                # Initial message in channel: no history, prompt is the tagged query
+                # Initial message in channel: check if replying to a message or standalone
                 full_prompt = cleaned_query
+
+            # Check for external links (e.g. GitHub PRs / Issues) in full_prompt and query
+            external_link_info = await extract_and_fetch_external_links(f"{cleaned_query}\n{full_prompt}")
+
+            # Load repository-specific context + org-wide skills dynamically
+            combined_query_text = f"{cleaned_query} {full_prompt} {external_link_info}"
+            repo_context = load_repo_context(mapped_repo, combined_query_text)
+
+            if external_link_info:
+                full_prompt = f"{external_link_info}\n\n{full_prompt}"
+                repo_context = f"{external_link_info}\n\n{repo_context}"
+                logger.info(f"🔗 ENRICHED PROMPT & CONTEXT WITH EXTERNAL LINK DATA:\n{external_link_info.strip()}")
+
+            context_files = [line for line in repo_context.splitlines() if line.startswith("--- ")]
+            logger.info(f"📄 LOADED CONTEXT ({len(context_files)} sections): {context_files or ['Base Overview']}")
 
             logger.info(f"🚀 DELEGATING TO OLLAMA LLM ({OLLAMA_MODEL})...")
             response_text, used_fallback = await generate_ollama_response(

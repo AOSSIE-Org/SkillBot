@@ -455,13 +455,12 @@ async def process_message(message: discord.Message):
             context_files = [line for line in repo_context.splitlines() if line.startswith("--- ")]
             logger.info(f"📄 LOADED CONTEXT ({len(context_files)} sections): {context_files or ['Base Overview']}")
 
-            logger.info(f"🚀 DELEGATING TO OLLAMA LLM ({OLLAMA_MODEL})...")
             response_text, used_fallback = await generate_ollama_response(
                 full_prompt, repo_context
             )
 
             # Prefix response with the active repository context header
-            if not response_text.startswith("According to the"):
+            if not used_fallback and not response_text.startswith("According to the"):
                 response_text = f"According to the {mapped_repo} repository context:\n\n{response_text}"
 
             logger.info(f"✨ LLM RESPONSE GENERATED [HTTP 200 OK] — Output length: {len(response_text)} chars")

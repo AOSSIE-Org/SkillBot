@@ -322,8 +322,10 @@ async def extract_and_fetch_external_links(text: str) -> str:
     if not urls:
         return ""
 
+    MAX_LINKS = 5
     fetched_parts = []
     seen_urls = set()
+    github_urls = []
     for url in urls:
         normalized_url = url.rstrip("/")
         if normalized_url in seen_urls:
@@ -331,14 +333,17 @@ async def extract_and_fetch_external_links(text: str) -> str:
         seen_urls.add(normalized_url)
 
         if "github.com" in url and ("/pull/" in url or "/issues/" in url):
-            info = await fetch_github_link_info(url)
-            if info:
-                fetched_parts.append(info)
+            github_urls.append(url)
+
+    if github_urls:
+        results = await asyncio.gather(
+            *(fetch_github_link_info(u) for u in github_urls[:MAX_LINKS])
+        )
+        fetched_parts = [info for info in results if info]
 
     if fetched_parts:
         return "\n".join(fetched_parts)
     return ""
-
 
 async def send_clarification_request(
     thread: discord.Thread, available_repos: list[str]

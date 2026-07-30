@@ -178,5 +178,35 @@
     "query": "Hey Chatbot",
     "reason": "insufficient_info",
     "thread_id": 1519340008375324792
+  },
+  {
+    "timestamp": "2026-07-24T02:16:40.569987+00:00",
+    "query": "now, chatbot are you ready ?",
+    "reason": "repo_clarification_needed",
+    "thread_id": 1517874016214585464
+  },
+  {
+    "timestamp": "2026-07-24T02:16:43.656801+00:00",
+    "query": "Hey Chatbot",
+    "reason": "repo_clarification_needed",
+    "thread_id": 1519340008375324792
+  },
+  {
+    "timestamp": "2026-07-24T02:16:46.958438+00:00",
+    "query": "",
+    "reason": "repo_clarification_needed",
+    "thread_id": 1529882019067334806
+  },
+  {
+    "timestamp": "2026-07-24T02:17:19.903294+00:00",
+    "query": "hi <@1484647244149035202>",
+    "reason": "repo_clarification_needed",
+    "thread_id": 1479012884209078365
+  },
+  {
+    "timestamp": "2026-07-24T02:18:11.072177+00:00",
+    "query": "",
+    "reason": "repo_clarification_needed",
+    "thread_id": 1479012884209078365
   }
 ]

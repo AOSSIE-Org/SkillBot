@@ -8,11 +8,13 @@
 > Pinned Dependencies, Signed Releases, Maintained status, and Known Vulnerabilities.
 >
 > **How to use:**
+>
 > 1. Fill in checkboxes below — tick `[x]` for Met, leave `[ ]` for Unmet, use `[~]` for N/A
 > 2. Add a brief note or URL after each item as evidence
 > 3. Run the checklist-score workflow to update the badge automatically
 >
 > **Legend:**
+>
 > - 🔴 MUST — Required for passing
 > - 🟡 SHOULD — Required unless documented rationale given
 > - 🔵 SUGGESTED — Optional but recommended
@@ -251,11 +253,13 @@
 > Add domain-specific notes here for Web3, Full-Stack, or AI projects.
 
 ### Web3 / Solidity Notes
+
 - Scorecard does not audit Solidity-specific security. Use [Slither](https://github.com/crytic/slither) for `static_analysis` and `warnings` criteria.
 - For `crypto_*` criteria, document which cryptographic primitives your contracts rely on (e.g., ECDSA in EVM is standard).
 - Smart contract audit reports count as evidence for `know_secure_design`.
 
 ### Full-Stack / Next.js Notes
+
 - For `crypto_password_storage`: document which auth library handles hashing (e.g., NextAuth + bcrypt).
 - For `dynamic_analysis`: [OWASP ZAP](https://www.zaproxy.org/) can be run as a GitHub Action.
 
@@ -265,5 +269,5 @@
 
 ---
 
-*This checklist complements [OpenSSF Scorecard](https://scorecard.dev/) (auto-detected checks) and is
-inspired by the [OpenSSF Best Practices Badge](https://www.bestpractices.dev/en/criteria/0) passing criteria.*
+_This checklist complements [OpenSSF Scorecard](https://scorecard.dev/) (auto-detected checks) and is
+inspired by the [OpenSSF Best Practices Badge](https://www.bestpractices.dev/en/criteria/0) passing criteria._

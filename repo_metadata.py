@@ -10,23 +10,24 @@ REPO_METADATA = {
             "social-share-button",
         ],
     },
-    "Template-Repo-Main": {
+    "Template-Repo": {
         "url": "https://github.com/AOSSIE-Org/Template-Repo",
         "description": "Starter template for all AOSSIE projects",
         "keywords": [
-            "template",
-            "repo",
-            "main",
-            "template-repo-main",
-            "starter template",
             "template-repo",
+            "template",
+            "template repo",
+            "starter template",
+            "aossie template",
         ],
     },
     "OrgExplorer": {
         "url": "https://github.com/kpj2006/OrgExplorer/tree/skills",
         "description": "Real-time analytics and insights for GitHub organizations",
         "keywords": [
-            "dashboard",
+            "orgexplorer",
+            "org explorer",
+            "org-explorer",
             "pullrequest",
             "pr-dashboard",
             "pr dashboard",

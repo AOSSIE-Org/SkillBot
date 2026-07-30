@@ -33,26 +33,8 @@
 | Reporting          | 8   | 8     | ✅     |
 | Quality            | 11   | 11     | ✅     |
 | Security           | 9   | 9     | ✅     |
-| Analysis           | 7   | 7     | ✅     |
-| **Total**          | **49** | **49** | **100%** |
-
---------------------|-----|-------|--------|
-| Basics             | 8   | 8     | ✅     |
-| Change Control     | 6   | 6     | ✅     |
-| Reporting          | 8   | 8     | ✅     |
-| Quality            | 11   | 11     | ✅     |
-| Security           | 9   | 9     | ✅     |
-| Analysis           | 7   | 7     | ✅     |
-| **Total**          | **49** | **49** | **100%** |
-
---------------------|-----|-------|--------|
-| Basics             | 8   | 8     | ✅     |
-| Change Control     | 6   | 6     | ✅     |
-| Reporting          | 8   | 8     | ✅     |
-| Quality            | 11   | 11     | ✅     |
-| Security           | 9   | 9     | ✅     |
-| Analysis           | 7   | 7     | ✅     |
-| **Total**          | **49** | **49** | **100%** |
+| Analysis           | 6   | 7     | ✅     |
+| **Total**          | **48** | **49** | **98%** |
 
 ---
 
@@ -175,7 +157,7 @@
   - *Evidence (CONTRIBUTING reference or informal policy):* https://github.com/AOSSIE-Org/SkillBot/blob/main/CONTRIBUTING.md#pull-request-guidelines
 
 - [x] 🔴 **tests_are_added** — Evidence exists that the test policy has been followed in recent major changes (e.g., PRs include tests).
-  - *Evidence URL (recent PR with tests):* https://github.com/AOSSIE-Org/SkillBot/blob/main/.github/workflows/danger.yml
+  - *Evidence URL (recent PR with tests):* https://github.com/AOSSIE-Org/SkillBot/commits/main/scripts/test_bot_routing.py
 
 - [x] 🔵 **tests_documented_added** — The test policy is documented in contribution instructions. *(SUGGESTED)*
   - *Evidence URL:* https://github.com/AOSSIE-Org/SkillBot/blob/main/CONTRIBUTING.md#pull-request-guidelines
@@ -243,14 +225,14 @@
 
 ### Dynamic Code Analysis
 
-- [~] 🔵 **dynamic_analysis** — At least one dynamic analysis tool is applied before major releases (fuzzer, web app scanner like OWASP ZAP, etc.). *(SUGGESTED)*
-  - *Tool used:* `[~]` N/A — *Justification:* Interpreted Python application; no release-time web app scanner or fuzzer integrated.
+- [ ] 🔵 **dynamic_analysis** — At least one dynamic analysis tool is applied before major releases (fuzzer, web app scanner like OWASP ZAP, etc.). *(SUGGESTED)*
+  - *Tool used:* None — *Justification:* No security-focused dynamic analysis tool (such as fuzzing, DAST, or web application scanning) is integrated into the project.
 
 - [~] 🔵 **dynamic_analysis_enable_assertions** — Dynamic analysis / testing runs with assertions enabled (not just production mode). *(SUGGESTED)*
-  - *Note:* `[~]` N/A — *Justification:* No dynamic analysis tool in use.
+  - *Note:* `[~]` N/A — *Justification:* No security-focused dynamic analysis tool in use.
 
 - [~] 🔴 **dynamic_analysis_fixed** — Medium+ severity vulnerabilities found by dynamic analysis are fixed in a timely manner.
-  - *Note:* `[~]` N/A — *Justification:* No dynamic analysis tool in use.
+  - *Note:* `[~]` N/A — *Justification:* No security-focused dynamic analysis tool in use.
 
 - [~] 🔵 **dynamic_analysis_unsafe** — If the project uses memory-unsafe languages (C/C++), memory safety tools (Valgrind, AddressSanitizer) are used. *(SUGGESTED)*
   - *Note:* `[~]` N/A — *Justification:* Project is developed in Python, a memory-safe language.
@@ -274,7 +256,7 @@
 
 ### AI / LLM Notes
 - For `know_common_errors`: Maintainers are aware of prompt injection, system context leaking, and validation of local LLM responses (Ollama).
-- For `dynamic_analysis`: Local LLM queries are validated dynamically using dedicated query test suites (`scripts/test_bot_routing.py`).
+- For `dynamic_analysis`: Functional test suites (`scripts/test_bot_routing.py`) validate bot routing and response logic, but do not replace security-focused dynamic analysis (such as fuzzing or web scanning).
 
 ---
 

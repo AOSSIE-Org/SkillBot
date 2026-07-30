@@ -282,6 +282,61 @@ def is_query_covered(query: str) -> bool:
     return False
 
 
+async def _resolve_repo(
+    message: discord.Message, cleaned_query: str, available_repos: list[str]
+) -> tuple[str | None, str | None]:
+    """Resolve target repository using thread name, keywords, thread history, or LLM classification."""
+    is_in_thread = isinstance(message.channel, discord.Thread)
+
+    if is_in_thread:
+        thread = message.channel
+        mapped_repo = get_repo_from_thread_name(thread.name, available_repos)
+        if mapped_repo:
+            return mapped_repo, f"Thread Name ('{thread.name}')"
+
+        detected_repo = detect_repo_by_keywords(cleaned_query, available_repos)
+        match_method = None
+        if detected_repo:
+            match_method = "Query Keywords"
+        else:
+            recent_ctx = await _build_conversation_context(thread, message.author, cleaned_query, message)
+            detected_repo = detect_repo_by_keywords(recent_ctx, available_repos)
+            if detected_repo:
+                match_method = "Recent Thread History Keywords"
+
+        if not detected_repo:
+            logger.info("🤖 Calling Ollama LLM classifier to determine target project...")
+            detected_repo = await classify_repo_with_llm(
+                cleaned_query, available_repos, OLLAMA_MODEL, OLLAMA_URL
+            )
+            if detected_repo:
+                match_method = "LLM Classifier"
+
+        if detected_repo:
+            new_name = thread.name.replace("[Unassigned]", f"[{detected_repo}]").replace("Unassigned", detected_repo)
+            try:
+                await thread.edit(name=new_name[:100])
+                logger.info(f"Renamed thread {thread.id} to: {new_name}")
+            except Exception as e:
+                logger.error(f"Failed to rename thread {thread.id}: {e}")
+            return detected_repo, match_method
+
+        return None, None
+    else:
+        detected_repo = detect_repo_by_keywords(cleaned_query, available_repos)
+        if detected_repo:
+            return detected_repo, "Query Keywords"
+
+        logger.info("🤖 Calling Ollama LLM classifier for initial message...")
+        detected_repo = await classify_repo_with_llm(
+            cleaned_query, available_repos, OLLAMA_MODEL, OLLAMA_URL
+        )
+        if detected_repo:
+            return detected_repo, "LLM Classifier"
+
+        return None, None
+
+
 async def process_message(message: discord.Message):
     """Process a single message: new messages in the main channel spawn a thread,
     messages in existing threads continue the conversation there."""
@@ -313,61 +368,19 @@ async def process_message(message: discord.Message):
     logger.info(f"💬 Query: \"{cleaned_query or '(bot mention only)'}\"")
     logger.info(f"🔍 Discovered Available Projects: {available_repos}")
 
-    match_method = None
-    mapped_repo = None
-
     if is_in_thread:
         thread = message.channel
         if thread.archived or thread.locked:
             logger.warning(f"Thread {thread.id} is archived/locked — cannot respond")
             return
-        mapped_repo = get_repo_from_thread_name(thread.name, available_repos)
-        if mapped_repo:
-            match_method = f"Thread Name ('{thread.name}')"
 
-        # If not mapped yet, try query keywords or thread history keywords
-        if not mapped_repo:
-            detected_repo = detect_repo_by_keywords(cleaned_query, available_repos)
-            if detected_repo:
-                match_method = "Query Keywords"
-            else:
-                # Check recent thread history text if query itself was short or a simple tag
-                recent_ctx = await _build_conversation_context(thread, author, cleaned_query, message)
-                detected_repo = detect_repo_by_keywords(recent_ctx, available_repos)
-                if detected_repo:
-                    match_method = "Recent Thread History Keywords"
+    mapped_repo, match_method = await _resolve_repo(message, cleaned_query, available_repos)
 
-            if not detected_repo:
-                logger.info("🤖 Calling Ollama LLM classifier to determine target project...")
-                detected_repo = await classify_repo_with_llm(
-                    cleaned_query, available_repos, OLLAMA_MODEL, OLLAMA_URL
-                )
-                if detected_repo:
-                    match_method = "LLM Classifier"
-
-            if detected_repo:
-                new_name = thread.name.replace("[Unassigned]", f"[{detected_repo}]").replace("Unassigned", detected_repo)
-                try:
-                    await thread.edit(name=new_name[:100])
-                    logger.info(f"Renamed thread {thread.id} to: {new_name}")
-                except Exception as e:
-                    logger.error(f"Failed to rename thread {thread.id}: {e}")
-                mapped_repo = detected_repo
+    if is_in_thread:
+        thread = message.channel
     else:
-        # Check if we can detect the repository from the initial message
-        detected_repo = detect_repo_by_keywords(cleaned_query, available_repos)
-        if detected_repo:
-            match_method = "Query Keywords"
-        else:
-            logger.info("🤖 Calling Ollama LLM classifier for initial message...")
-            detected_repo = await classify_repo_with_llm(
-                cleaned_query, available_repos, OLLAMA_MODEL, OLLAMA_URL
-            )
-            if detected_repo:
-                match_method = "LLM Classifier"
-
         channel = message.channel
-        thread_prefix = detected_repo if detected_repo else "Unassigned"
+        thread_prefix = mapped_repo if mapped_repo else "Unassigned"
         thread = await _get_or_create_thread(message, channel, thread_prefix)
         if not thread:
             await _log_gap(cleaned_query, "thread_creation_failed")
@@ -378,7 +391,6 @@ async def process_message(message: discord.Message):
             except Exception:
                 pass
             return
-        mapped_repo = detected_repo
 
     # If repository is still not determined, request clarification using .clinerules skill context
     if not mapped_repo:

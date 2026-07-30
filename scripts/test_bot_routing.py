@@ -52,7 +52,7 @@ async def test_all():
         ctx = load_repo_context(target_repo, query_str)
         print(f"Query: '{query_str}' -> Loaded context length: {len(ctx)} chars")
 
-    print("\n--- 4. End-to-End Response Generation Test ---")
+    print("\n--- 5. End-to-End Response Generation Test ---")
     sample_repo = "SocialShareButton"
     sample_query = "How do I install dependencies for SocialShareButton?"
     repo_context = load_repo_context(sample_repo, sample_query)
@@ -65,7 +65,7 @@ async def test_all():
     print(f"\nOllama Response (fallback={fallback}):\n")
     print(response)
 
-    print("\n--- 5. Unrouted Query Fallback Test ---")
+    print("\n--- 6. Unrouted Query Fallback Test ---")
     unrouted_query = "Tell me a joke about bananas"
     skill_context = load_skill_context()
     fallback_prompt = (

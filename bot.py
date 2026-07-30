@@ -284,7 +284,7 @@ def is_query_covered(query: str) -> bool:
 
 async def _resolve_repo(
     message: discord.Message, cleaned_query: str, available_repos: list[str]
-) -> tuple[str | None, str | None]:
+) -> tuple[str | None, str | None, str | None]:
     """Resolve target repository using thread name, keywords, thread history, or LLM classification."""
     is_in_thread = isinstance(message.channel, discord.Thread)
 
@@ -292,23 +292,26 @@ async def _resolve_repo(
         thread = message.channel
         mapped_repo = get_repo_from_thread_name(thread.name, available_repos)
         if mapped_repo:
-            return mapped_repo, f"Thread Name ('{thread.name}')"
+            return mapped_repo, f"Thread Name ('{thread.name}')", None
 
         detected_repo = detect_repo_by_keywords(cleaned_query, available_repos)
         match_method = None
+        built_context = None
+
         if detected_repo:
             match_method = "Query Keywords"
         else:
-            recent_ctx = await _build_conversation_context(thread, message.author, cleaned_query, message)
-            detected_repo = detect_repo_by_keywords(recent_ctx, available_repos)
+            built_context = await _build_conversation_context(thread, message.author, cleaned_query, message)
+            detected_repo = detect_repo_by_keywords(built_context, available_repos)
             if detected_repo:
                 match_method = "Recent Thread History Keywords"
 
         if not detected_repo:
             logger.info("🤖 Calling Ollama LLM classifier to determine target project...")
-            detected_repo = await classify_repo_with_llm(
-                cleaned_query, available_repos, OLLAMA_MODEL, OLLAMA_URL
-            )
+            async with ollama_lock:
+                detected_repo = await classify_repo_with_llm(
+                    cleaned_query, available_repos, OLLAMA_MODEL, OLLAMA_URL
+                )
             if detected_repo:
                 match_method = "LLM Classifier"
 
@@ -319,22 +322,23 @@ async def _resolve_repo(
                 logger.info(f"Renamed thread {thread.id} to: {new_name}")
             except Exception as e:
                 logger.error(f"Failed to rename thread {thread.id}: {e}")
-            return detected_repo, match_method
+            return detected_repo, match_method, built_context
 
-        return None, None
+        return None, None, built_context
     else:
         detected_repo = detect_repo_by_keywords(cleaned_query, available_repos)
         if detected_repo:
-            return detected_repo, "Query Keywords"
+            return detected_repo, "Query Keywords", None
 
         logger.info("🤖 Calling Ollama LLM classifier for initial message...")
-        detected_repo = await classify_repo_with_llm(
-            cleaned_query, available_repos, OLLAMA_MODEL, OLLAMA_URL
-        )
+        async with ollama_lock:
+            detected_repo = await classify_repo_with_llm(
+                cleaned_query, available_repos, OLLAMA_MODEL, OLLAMA_URL
+            )
         if detected_repo:
-            return detected_repo, "LLM Classifier"
+            return detected_repo, "LLM Classifier", None
 
-        return None, None
+        return None, None, None
 
 
 async def process_message(message: discord.Message):
@@ -374,7 +378,7 @@ async def process_message(message: discord.Message):
             logger.warning(f"Thread {thread.id} is archived/locked — cannot respond")
             return
 
-    mapped_repo, match_method = await _resolve_repo(message, cleaned_query, available_repos)
+    mapped_repo, match_method, cached_context = await _resolve_repo(message, cleaned_query, available_repos)
 
     if is_in_thread:
         thread = message.channel
@@ -402,7 +406,8 @@ async def process_message(message: discord.Message):
                 f"No specific repository was matched from available projects ({', '.join(available_repos)}). "
                 f"Politely ask the user which project they need help with or clarify their request."
             )
-            response_text, _ = await generate_ollama_response(fallback_prompt, skill_context)
+            async with ollama_lock:
+                response_text, _ = await generate_ollama_response(fallback_prompt, skill_context)
             try:
                 await thread.send(response_text)
                 logger.info("📤 Clarification response sent to thread successfully [HTTP 200 OK]")
@@ -433,9 +438,12 @@ async def process_message(message: discord.Message):
         try:
             if is_in_thread:
                 # Inside threads: pull up to 3-4 preceding messages + reply targets + primary tagged message
-                full_prompt = await _build_conversation_context(
-                    thread, author, cleaned_query, message
-                )
+                if cached_context:
+                    full_prompt = cached_context
+                else:
+                    full_prompt = await _build_conversation_context(
+                        thread, author, cleaned_query, message
+                    )
             else:
                 # Initial message in channel: check if replying to a message or standalone
                 full_prompt = cleaned_query

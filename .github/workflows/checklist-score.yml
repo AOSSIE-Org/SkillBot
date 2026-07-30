@@ -129,7 +129,7 @@ jobs:
 
           formatted_table = f"\n\n{table.strip()}\n\n"
           new_content = re.sub(
-              r'(?<=<!-- Auto-updated by checklist-score\.yml workflow — do not edit manually -->).*?(?=---)',
+              r'(?<=<!-- Auto-updated by checklist-score\.yml workflow — do not edit manually -->).*?(?=\n\s*---\s*(?:\n|$))',
               formatted_table,
               content,
               flags=re.DOTALL

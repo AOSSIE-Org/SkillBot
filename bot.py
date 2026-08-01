@@ -16,6 +16,9 @@ from repo_router import (
     load_repo_context,
     send_clarification_request,
     extract_and_fetch_external_links,
+    get_repo_full_name,
+    fetch_github_issue_comments,
+    create_github_issue,
 )
 
 
@@ -32,6 +35,10 @@ DISCORD_CHANNEL_ID_INT = None
 OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'llama3.2')
 SKILL_FILE_PATH = os.getenv('SKILL_FILE_PATH', '.clinerules')
 OLLAMA_URL = "http://localhost:11434/api/generate"
+# Ollama's own runtime default measured via `ollama ps` on this machine (no num_ctx was set
+# anywhere before this). Made explicit + tunable since it silently caps every request's
+# system+prompt+response budget — raising it costs VRAM/RAM this machine is already tight on.
+OLLAMA_NUM_CTX = int(os.getenv('OLLAMA_NUM_CTX', '4096'))
 GAP_LOG_PATH = Path("gap_log.json")
 MAX_RETRIES = 3
 
@@ -101,17 +108,25 @@ def load_skill_context() -> str:
     return ""
 
 
-async def generate_ollama_response(prompt: str, context: str) -> tuple[str, bool]:
+async def generate_ollama_response(
+    prompt: str,
+    context: str,
+    has_external_link: bool = False,
+    context_label: str = "Repository Context & Guidelines",
+) -> tuple[str, bool]:
     """Send prompt to local Ollama instance. Returns (response_text, used_llm_fallback)."""
-    base_instructions = (
-        "You are an expert open-source maintainer and contributor assistant for AOSSIE.\n"
-        "Guidelines:\n"
-        "- When evaluating GitHub PR or Issue links provided by users (e.g., 'is this correct?'), review the PR's title, author, description, and changes against the repository goals.\n"
-        "- Do NOT comment on trivial URL syntax or trailing slashes.\n"
-        "- Provide a helpful, constructive, and direct answer regarding the validity and content of the PR/issue.\n"
-    )
+    base_instructions = "You are an expert open-source maintainer and contributor assistant for AOSSIE.\n"
+    if has_external_link:
+        # Only add PR/Issue-review framing when a link was actually fetched — otherwise it's
+        # irrelevant noise competing for attention in every single answer.
+        base_instructions += (
+            "Guidelines:\n"
+            "- When evaluating GitHub PR or Issue links provided by users (e.g., 'is this correct?'), review the PR's title, author, description, and changes against the repository goals.\n"
+            "- Do NOT comment on trivial URL syntax or trailing slashes.\n"
+            "- Provide a helpful, constructive, and direct answer regarding the validity and content of the PR/issue.\n"
+        )
     if context:
-        system_prompt = f"{base_instructions}\nRepository Context & Guidelines:\n{context}"
+        system_prompt = f"{base_instructions}\n{context_label}:\n{context}"
     else:
         system_prompt = base_instructions
 
@@ -119,7 +134,8 @@ async def generate_ollama_response(prompt: str, context: str) -> tuple[str, bool
         "model": OLLAMA_MODEL,
         "prompt": prompt,
         "system": system_prompt,
-        "stream": False
+        "stream": False,
+        "options": {"num_ctx": OLLAMA_NUM_CTX},
     }
 
     for attempt in range(1, MAX_RETRIES + 1):
@@ -282,6 +298,86 @@ def is_query_covered(query: str) -> bool:
     return False
 
 
+ISSUE_TRIGGER_PATTERN = re.compile(r"\b(create|open|file|raise|make)\s+an?\s+issue\b", re.IGNORECASE)
+
+
+def is_issue_creation_request(query: str) -> bool:
+    """Detect an EXPLICIT ask to open a GitHub issue. Only fires on the words a user actually
+    typed — SkillBot never opens an issue on its own just because it hit a skill gap."""
+    return bool(ISSUE_TRIGGER_PATTERN.search(query))
+
+
+def parse_issue_draft(text: str) -> tuple[str | None, str | None]:
+    """Parse the 'TITLE: ...\\nBODY: ...' format we ask the model to draft an issue in."""
+    title_match = re.search(r"TITLE:\s*(.+)", text, re.IGNORECASE)
+    body_match = re.search(r"BODY:\s*(.+)", text, re.DOTALL | re.IGNORECASE)
+    title = title_match.group(1).strip() if title_match else None
+    body = body_match.group(1).strip() if body_match else None
+    return title, body
+
+
+async def handle_issue_creation_request(
+    thread: discord.Thread,
+    author: discord.User,
+    mapped_repo: str,
+    cleaned_query: str,
+    message: discord.Message,
+) -> None:
+    """Draft and open a GitHub issue from the surrounding discussion — never automatic, only
+    reached when is_issue_creation_request() matched an explicit user ask."""
+    repo_full_name = get_repo_full_name(mapped_repo)
+    if not repo_full_name:
+        await thread.send(
+            f"I don't have a GitHub repo mapped for '{mapped_repo}', so I can't open an issue there."
+        )
+        return
+
+    # The trigger message itself ("create an issue for this") rarely contains the actual
+    # problem — pull the last 3-4 messages so the real description is in view.
+    context_text = await _build_conversation_context(thread, author, cleaned_query, message)
+
+    # If an existing GitHub issue/PR is already part of this discussion, pull its comments too
+    # rather than drafting from Discord lines alone.
+    extra_comments = ""
+    ref_match = re.search(
+        r"https?://github\.com/([^/\s]+)/([^/\s]+)/(?:pull|issues)/(\d+)",
+        f"{cleaned_query}\n{context_text}",
+        re.IGNORECASE,
+    )
+    if ref_match:
+        owner, repo, number = ref_match.groups()
+        extra_comments = await fetch_github_issue_comments(owner, repo, number)
+
+    draft_prompt = (
+        "A contributor wants to open a GitHub issue based on the discussion below. "
+        "Reply in EXACTLY this format, nothing else:\n"
+        "TITLE: <a short, specific issue title>\n"
+        "BODY: <a clear issue body describing the problem/request, using only what's in the discussion below>\n\n"
+        f"Discussion:\n{context_text}\n\n{extra_comments}"
+    )
+    async with ollama_lock:
+        draft_text, used_fallback = await generate_ollama_response(draft_prompt, "")
+
+    if used_fallback:
+        await thread.send("I couldn't reach the local model to draft this issue — please try again shortly.")
+        return
+
+    title, body = parse_issue_draft(draft_text)
+    if not title or not body:
+        await thread.send(
+            "I couldn't draft a clear issue from this discussion — could you restate the problem in one message?"
+        )
+        return
+
+    body_with_attribution = f"{body}\n\n---\n_Requested by @{author.display_name} via Discord._"
+
+    issue_url = await create_github_issue(repo_full_name, title, body_with_attribution)
+    if issue_url:
+        await thread.send(f"Opened: {issue_url}")
+    else:
+        await thread.send("Something went wrong creating the issue — please open it manually or ask a maintainer.")
+
+
 async def _resolve_repo(
     message: discord.Message, cleaned_query: str, available_repos: list[str]
 ) -> tuple[str | None, str | None, str | None]:
@@ -310,7 +406,7 @@ async def _resolve_repo(
             logger.info("🤖 Calling Ollama LLM classifier to determine target project...")
             async with ollama_lock:
                 detected_repo = await classify_repo_with_llm(
-                    cleaned_query, available_repos, OLLAMA_MODEL, OLLAMA_URL
+                    cleaned_query, available_repos, OLLAMA_MODEL, OLLAMA_URL, OLLAMA_NUM_CTX
                 )
             if detected_repo:
                 match_method = "LLM Classifier"
@@ -407,7 +503,11 @@ async def process_message(message: discord.Message):
                 f"Politely ask the user which project they need help with or clarify their request."
             )
             async with ollama_lock:
-                response_text, _ = await generate_ollama_response(fallback_prompt, skill_context)
+                response_text, _ = await generate_ollama_response(
+                    fallback_prompt,
+                    skill_context,
+                    context_label="Global Bot Guidance (.clinerules — not repository-specific)",
+                )
             try:
                 await thread.send(response_text)
                 logger.info("📤 Clarification response sent to thread successfully [HTTP 200 OK]")
@@ -424,6 +524,12 @@ async def process_message(message: discord.Message):
         return
 
     logger.info(f"✅ MAPPED PROJECT: '{mapped_repo}' (via {match_method})")
+
+    if is_issue_creation_request(cleaned_query):
+        logger.info("📝 EXPLICIT ISSUE-CREATION REQUEST detected — drafting and opening issue")
+        await handle_issue_creation_request(thread, author, mapped_repo, cleaned_query, message)
+        logger.info("==================================================")
+        return
 
     async with ollama_lock:
         try:
@@ -456,22 +562,31 @@ async def process_message(message: discord.Message):
             repo_context = load_repo_context(mapped_repo, combined_query_text)
 
             if external_link_info:
+                # Fetched PR/Issue data is request-specific, not a repository guideline — keep it
+                # in the prompt only, so it isn't duplicated into (or mislabeled as) the
+                # "Repository Context & Guidelines" system block built in generate_ollama_response.
                 full_prompt = f"{external_link_info}\n\n{full_prompt}"
-                repo_context = f"{external_link_info}\n\n{repo_context}"
-                logger.info(f"🔗 ENRICHED PROMPT & CONTEXT WITH EXTERNAL LINK DATA:\n{external_link_info.strip()}")
+                link_count = external_link_info.count("--- Fetched GitHub")
+                logger.info(f"🔗 EXTERNAL LINKS: {link_count} fetched, +{len(external_link_info)} chars to prompt")
 
             context_files = [line for line in repo_context.splitlines() if line.startswith("--- ")]
-            logger.info(f"📄 LOADED CONTEXT ({len(context_files)} sections): {context_files or ['Base Overview']}")
+            logger.info(
+                f"📄 CONTEXT: {len(context_files)} section(s) {context_files or ['Base Overview']} "
+                f"— system={len(repo_context)} chars, prompt={len(full_prompt)} chars"
+            )
 
             response_text, used_fallback = await generate_ollama_response(
-                full_prompt, repo_context
+                full_prompt, repo_context, has_external_link=bool(external_link_info)
             )
 
             # Prefix response with the active repository context header
             if not used_fallback and not response_text.startswith("According to the"):
                 response_text = f"According to the {mapped_repo} repository context:\n\n{response_text}"
 
-            logger.info(f"✨ LLM RESPONSE GENERATED [HTTP 200 OK] — Output length: {len(response_text)} chars")
+            logger.info(
+                f"✨ RESPONSE: {len(response_text)} chars, fallback={used_fallback} "
+                f"[HTTP 200 OK]"
+            )
 
             if used_fallback or not repo_context:
                 await _log_gap(

@@ -371,7 +371,7 @@ async def handle_issue_creation_request(
 
     body_with_attribution = f"{body}\n\n---\n_Requested by @{author.display_name} via Discord._"
 
-    issue_url = await create_github_issue(repo_full_name, title, body_with_attribution)
+    issue_url = await create_github_issue(repo_full_name, title[:256], body_with_attribution)
     if issue_url:
         await thread.send(f"Opened: {issue_url}")
     else:

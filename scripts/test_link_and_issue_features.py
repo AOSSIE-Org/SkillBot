@@ -16,7 +16,7 @@ import asyncio
 import io
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 if sys.platform == "win32":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
@@ -280,13 +280,27 @@ async def section_8_create_github_issue_mocked():
         url3 = await rr.create_github_issue("kpj2006/Repo", "Test title", "Test body")
     check("gh binary missing (FileNotFoundError) returns None gracefully", url3 is None)
 
+    # communicate() itself returns fine here — the point is asyncio.wait_for (not communicate)
+    # is what actually times out, so patch that directly rather than simulating the symptom on
+    # communicate(). This also lets us assert the real 10.0s budget was used, not just that
+    # *some* TimeoutError was handled.
     hang_proc = AsyncMock()
-    hang_proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError())
-    hang_proc.kill = lambda: None  # sync method on a real Process object
+    # Plain Mock, not AsyncMock: wait_for is mocked below and never actually awaits whatever
+    # communicate() hands it, so returning a real coroutine here would just leak an
+    # "unawaited coroutine" warning for no test value.
+    hang_proc.communicate = Mock(return_value=(b"", b""))
+    hang_proc.kill = Mock()  # sync method on a real Process object
     hang_proc.wait = AsyncMock(return_value=0)
-    with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=hang_proc)):
+    with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=hang_proc)), \
+         patch("asyncio.wait_for", AsyncMock(side_effect=asyncio.TimeoutError())) as mock_wait_for:
         url4 = await rr.create_github_issue("kpj2006/Repo", "Test title", "Test body")
     check("hung gh process times out, gets killed, returns None (not left running)", url4 is None)
+    check(
+        "timeout uses the documented 10.0s budget",
+        mock_wait_for.call_args.kwargs.get("timeout") == 10.0,
+        f"got kwargs={mock_wait_for.call_args.kwargs}",
+    )
+    check("kill() is actually invoked on timeout, not just assumed", hang_proc.kill.called)
     check("timeout path awaited proc.wait() to reap the killed process", hang_proc.wait.called)
 
 

@@ -429,7 +429,7 @@ async def _resolve_repo(
         logger.info("🤖 Calling Ollama LLM classifier for initial message...")
         async with ollama_lock:
             detected_repo = await classify_repo_with_llm(
-                cleaned_query, available_repos, OLLAMA_MODEL, OLLAMA_URL
+                cleaned_query, available_repos, OLLAMA_MODEL, OLLAMA_URL, OLLAMA_NUM_CTX
             )
         if detected_repo:
             return detected_repo, "LLM Classifier", None

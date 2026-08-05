@@ -1,0 +1,4 @@
+--- OLD regex result around marker ---
+'<!-- Auto-updated by checklist-score.yml workflow — do not edit manually -->\n\nte'
+--- NEW regex result around marker ---
+'<!-- Auto-updated by checklist-score.yml workflow — do not edit manually -->\n\nte'

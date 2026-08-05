@@ -127,9 +127,17 @@ jobs:
           if marker not in content:
               print("⚠️ Warning: Auto-update marker not found in BestPracticesChecklist.md")
 
-          formatted_table = f"\n\n{table.strip()}\n\n"
+          # Trailing single "\n" (not "\n\n"): the lookahead below intentionally leaves one
+          # newline directly before "---" unmatched (see comment there), so formatted_table only
+          # needs to supply the other side of that blank line, not both.
+          formatted_table = f"\n\n{table.strip()}\n"
           new_content = re.sub(
-              r'(?<=<!-- Auto-updated by checklist-score\.yml workflow — do not edit manually -->).*?(?=\n\s*---\s*(?:\n|$))',
+              # No \s* between \n and --- here: the table's own header separator row (e.g.
+              # "|-----|-----|") also contains runs of 3+ dashes, so the lookahead must require
+              # "---" to be the literal start of a line (immediately after a single "\n"), not
+              # "\n" followed by arbitrary whitespace — otherwise it can match inside the table
+              # itself instead of the horizontal-rule divider that follows it.
+              r'(?<=<!-- Auto-updated by checklist-score\.yml workflow — do not edit manually -->).*?(?=\n---\s*(?:\n|$))',
               formatted_table,
               content,
               flags=re.DOTALL

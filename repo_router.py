@@ -406,6 +406,14 @@ async def fetch_generic_link_info(url: str, max_chars: int = 800) -> str | None:
     try:
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
             res = await client.get(url, headers={"User-Agent": "SkillBot"})
+
+            # A redirect could land on a host outside the allowlist (e.g. an open redirect on an
+            # otherwise-allowed domain) — re-check the FINAL URL, not just the one the user pasted.
+            final_url = str(res.url)
+            if not _is_allowed_domain(final_url):
+                logger.warning(f"Generic link fetch redirected outside the allowlist: {url} -> {final_url}")
+                return None
+
             if res.status_code != 200:
                 logger.warning(f"Generic link fetch returned HTTP {res.status_code} for {url}")
                 return None
@@ -450,13 +458,17 @@ async def extract_and_fetch_external_links(text: str) -> str:
             generic_urls.append(url)
 
     fetched_parts = []
-    if github_urls:
+    attempted_github_urls = github_urls[:MAX_LINKS]
+    if attempted_github_urls:
         results = await asyncio.gather(
-            *(fetch_github_link_info(u) for u in github_urls[:MAX_LINKS])
+            *(fetch_github_link_info(u) for u in attempted_github_urls)
         )
         fetched_parts.extend([info for info in results if info])
 
-    remaining_slots = MAX_LINKS - len(fetched_parts)
+    # Budget by attempted count, not successful count — a failed fetch still cost a network
+    # call, so it should still consume the MAX_LINKS budget rather than letting more attempts
+    # through to compensate.
+    remaining_slots = MAX_LINKS - len(attempted_github_urls)
     if generic_urls and remaining_slots > 0:
         results = await asyncio.gather(
             *(fetch_generic_link_info(u) for u in generic_urls[:remaining_slots])
@@ -514,7 +526,13 @@ async def create_github_issue(repo_full_name: str, title: str, body: str) -> str
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await proc.communicate()
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10.0)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            logger.error(f"gh issue create timed out for {repo_full_name}")
+            return None
         if proc.returncode == 0:
             return stdout.decode().strip()
         logger.error(f"gh issue create failed for {repo_full_name}: {stderr.decode().strip()}")

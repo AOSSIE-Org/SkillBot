@@ -242,8 +242,8 @@ def section_7_get_repo_full_name():
     print("\n--- 7. get_repo_full_name edge cases ---")
 
     check(
-        "plain url (no branch suffix): GSoC-Proposal-Assistant",
-        rr.get_repo_full_name("GSoC-Proposal-Assistant") == "kpj2006/GSoC-Proposal-Assistant",
+        "plain url (no branch suffix): GSoC-Info-Assistant",
+        rr.get_repo_full_name("GSoC-Info-Assistant") == "kpj2006/GSoC-Info-Assistant",
     )
     check(
         "url with /tree/<branch> suffix stripped: SocialShareButton",
@@ -280,6 +280,74 @@ async def section_8_create_github_issue_mocked():
         url3 = await rr.create_github_issue("kpj2006/Repo", "Test title", "Test body")
     check("gh binary missing (FileNotFoundError) returns None gracefully", url3 is None)
 
+    hang_proc = AsyncMock()
+    hang_proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError())
+    hang_proc.kill = lambda: None  # sync method on a real Process object
+    hang_proc.wait = AsyncMock(return_value=0)
+    with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=hang_proc)):
+        url4 = await rr.create_github_issue("kpj2006/Repo", "Test title", "Test body")
+    check("hung gh process times out, gets killed, returns None (not left running)", url4 is None)
+    check("timeout path awaited proc.wait() to reap the killed process", hang_proc.wait.called)
+
+
+async def section_9_link_budget_and_redirect_revalidation():
+    print("\n--- 9. Link-fetch budget (attempted, not successful) + redirect re-validation ---")
+
+    async def always_fails(url):
+        return None  # simulates every GitHub fetch failing (rate-limited, 404, network error, ...)
+
+    generic_calls = []
+
+    async def fake_generic_fetch(url):
+        generic_calls.append(url)
+        return f"--- Fetched Page: {url} ---\nstub"
+
+    text = " ".join(
+        [f"https://github.com/AOSSIE-Org/Template-Repo/pull/{i}" for i in range(1, 4)]  # 3 failing github URLs
+        + [f"https://stackoverflow.com/questions/{i}" for i in range(1, 5)]  # 4 candidate generic URLs
+    )
+    with patch("repo_router.fetch_github_link_info", always_fails), \
+         patch("repo_router.fetch_generic_link_info", fake_generic_fetch):
+        await rr.extract_and_fetch_external_links(text)
+    check(
+        "budget charges 3 slots for 3 ATTEMPTED (failed) GitHub fetches, leaving exactly 2 for generic",
+        len(generic_calls) == 2,
+        f"got {len(generic_calls)} generic calls (old buggy behavior would allow 5, since 0 succeeded)",
+    )
+
+    class _FakeResponse:
+        def __init__(self, url, status_code=200, text=""):
+            self.url = url
+            self.status_code = status_code
+            self.text = text
+
+    class _FakeClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url, headers=None):
+            # Simulate an allowlisted domain redirecting to a host that is NOT allowlisted.
+            return _FakeResponse(url="http://evil.com/phished", status_code=200, text="<p>hi</p>")
+
+    # NOTE: stackoverflow.com — the only domain in ALLOWED_EXTERNAL_DOMAINS today — is
+    # special-cased straight to the api.stackexchange.com path and never reaches this generic
+    # HTML-fetch branch at all, so the redirect-revalidation code being tested here is currently
+    # unreachable in production. It only matters once a second, non-API domain is added to the
+    # allowlist — temporarily add one here so the branch is actually exercised.
+    with patch.object(rr, "ALLOWED_EXTERNAL_DOMAINS", {"example-docs.test"}), \
+         patch("repo_router.httpx.AsyncClient", _FakeClient):
+        result = await rr.fetch_generic_link_info("https://example-docs.test/some-redirecting-link")
+    check(
+        "final redirected URL re-validated against the allowlist — rejects if it lands outside it",
+        result is None,
+    )
+
 
 async def main():
     await section_1_domain_allowlist()
@@ -290,6 +358,7 @@ async def main():
     section_6_parse_issue_draft()
     section_7_get_repo_full_name()
     await section_8_create_github_issue_mocked()
+    await section_9_link_budget_and_redirect_revalidation()
 
     print(f"\n=== {PASSED} passed, {FAILED} failed ===")
     if FAILED:

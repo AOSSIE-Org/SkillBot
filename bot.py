@@ -8,6 +8,19 @@ import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 from dotenv import load_dotenv
+from repo_router import (
+    get_available_repos,
+    get_repo_from_thread_name,
+    detect_repo_by_keywords,
+    classify_repo_with_llm,
+    load_repo_context,
+    send_clarification_request,
+    extract_and_fetch_external_links,
+    get_repo_full_name,
+    fetch_github_issue_comments,
+    create_github_issue,
+)
+
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -22,6 +35,10 @@ DISCORD_CHANNEL_ID_INT = None
 OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'llama3.2')
 SKILL_FILE_PATH = os.getenv('SKILL_FILE_PATH', '.clinerules')
 OLLAMA_URL = "http://localhost:11434/api/generate"
+# Ollama's own runtime default measured via `ollama ps` on this machine (no num_ctx was set
+# anywhere before this). Made explicit + tunable since it silently caps every request's
+# system+prompt+response budget — raising it costs VRAM/RAM this machine is already tight on.
+OLLAMA_NUM_CTX = int(os.getenv('OLLAMA_NUM_CTX', '4096'))
 GAP_LOG_PATH = Path("gap_log.json")
 MAX_RETRIES = 3
 
@@ -33,7 +50,7 @@ client = discord.Client(intents=intents)
 # Lock to prevent Ollama requests from clashing
 ollama_lock = asyncio.Lock()
 
-THREAD_HISTORY_LIMIT = 10  # messages to pull from thread as conversation context
+THREAD_HISTORY_LIMIT = 4  # Pull up to 3-4 preceding messages for immediate context in threads
 
 
 def clean_bot_mention(content: str) -> str:
@@ -91,18 +108,34 @@ def load_skill_context() -> str:
     return ""
 
 
-async def generate_ollama_response(prompt: str, context: str) -> tuple[str, bool]:
+async def generate_ollama_response(
+    prompt: str,
+    context: str,
+    has_external_link: bool = False,
+    context_label: str = "Repository Context & Guidelines",
+) -> tuple[str, bool]:
     """Send prompt to local Ollama instance. Returns (response_text, used_llm_fallback)."""
+    base_instructions = "You are an expert open-source maintainer and contributor assistant for AOSSIE.\n"
+    if has_external_link:
+        # Only add PR/Issue-review framing when a link was actually fetched — otherwise it's
+        # irrelevant noise competing for attention in every single answer.
+        base_instructions += (
+            "Guidelines:\n"
+            "- When evaluating GitHub PR or Issue links provided by users (e.g., 'is this correct?'), review the PR's title, author, description, and changes against the repository goals.\n"
+            "- Do NOT comment on trivial URL syntax or trailing slashes.\n"
+            "- Provide a helpful, constructive, and direct answer regarding the validity and content of the PR/issue.\n"
+        )
     if context:
-        system_prompt = f"You are a helpful contributor assistant for AOSSIE.\n\nContext guidelines:\n{context}"
+        system_prompt = f"{base_instructions}\n{context_label}:\n{context}"
     else:
-        system_prompt = "You are a helpful contributor assistant for AOSSIE."
+        system_prompt = base_instructions
 
     payload = {
         "model": OLLAMA_MODEL,
         "prompt": prompt,
         "system": system_prompt,
-        "stream": False
+        "stream": False,
+        "options": {"num_ctx": OLLAMA_NUM_CTX},
     }
 
     for attempt in range(1, MAX_RETRIES + 1):
@@ -122,7 +155,7 @@ async def generate_ollama_response(prompt: str, context: str) -> tuple[str, bool
             if e.response.status_code == 404:
                 err_msg = (
                     f"I'm sorry, the local Ollama model '{OLLAMA_MODEL}' was not found (HTTP 404).\n"
-                    f"Please contact @kpj2006 or run `ollama pull {OLLAMA_MODEL}` on your machine."
+                    f"Please contact @karunpacholi0408 , @b.wp or run `ollama pull {OLLAMA_MODEL}` on your machine."
                 )
                 return err_msg, True
             elif 400 <= e.response.status_code < 500:
@@ -141,31 +174,47 @@ async def generate_ollama_response(prompt: str, context: str) -> tuple[str, bool
     return "I'm sorry, the local AI model is currently unavailable. Please try again later or ask a maintainer.", True
 
 
-async def _build_conversation_context(thread: discord.Thread, current_author: discord.User, current_query: str) -> str:
-    """Pull recent thread history and format it as conversation context for Ollama."""
+async def _build_conversation_context(thread: discord.Thread, current_author: discord.User, current_query: str, current_msg: discord.Message | None = None) -> str:
+    """Pull up to 3-4 preceding messages for thread context, prioritizing the tagged current query and reply references."""
     history_parts = []
+
+    # Check if current message is replying to another message via Discord reference
+    if current_msg and current_msg.reference and current_msg.reference.message_id:
+        try:
+            ref_msg = await current_msg.channel.fetch_message(current_msg.reference.message_id)
+            if ref_msg:
+                ref_cleaned = clean_bot_mention(ref_msg.content)
+                history_parts.append(f"Replied-to Message (from {ref_msg.author.display_name}): {ref_cleaned}")
+        except Exception as e:
+            logger.warning(f"Failed to fetch referenced message {current_msg.reference.message_id}: {e}")
+
     try:
         async for msg in thread.history(limit=THREAD_HISTORY_LIMIT, oldest_first=True):
+            if current_msg and msg.id == current_msg.id:
+                continue
             content_cleaned = clean_bot_mention(msg.content)
+            if not content_cleaned:
+                continue
             if msg.author.bot:
-                history_parts.append(f"Bot: {content_cleaned[:300]}")
+                history_parts.append(f"Bot: {content_cleaned[:250]}")
             else:
-                history_parts.append(f"{msg.author.display_name}: {content_cleaned[:300]}")
+                history_parts.append(f"{msg.author.display_name}: {content_cleaned[:250]}")
     except Exception as e:
         logger.error(f"Error fetching thread history for {thread.id}: {e}")
 
-    if not history_parts:
-        return ""
-
     current_query_cleaned = clean_bot_mention(current_query)
-    return (
-        "Previous conversation in this thread:\n" +
-        "\n".join(history_parts) +
-        f"\n\nCurrent question from {current_author.display_name}: {current_query_cleaned}"
-    )
+    if history_parts:
+        return (
+            "Immediate preceding context (last 3-4 messages & reply target):\n" +
+            "\n".join(history_parts[-5:]) +
+            f"\n\nPRIMARY TAGGED QUESTION (from {current_author.display_name}): {current_query_cleaned}"
+        )
+    return current_query_cleaned
 
 
-async def _get_or_create_thread(message: discord.Message, channel: discord.TextChannel) -> discord.Thread | None:
+async def _get_or_create_thread(
+    message: discord.Message, channel: discord.TextChannel, thread_prefix: str = "Unassigned"
+) -> discord.Thread | None:
     """If message is already in a thread, return that thread. Otherwise create a new one.
     One thread per conversation — never reuses threads by user ID. Returns None on failure."""
     if isinstance(message.channel, discord.Thread):
@@ -173,7 +222,7 @@ async def _get_or_create_thread(message: discord.Message, channel: discord.TextC
         if not thread.archived and not thread.locked:
             return thread
         logger.warning(f"Thread {thread.id} is archived/locked — creating a new one")
-        return None # cannot create thread from message already in a thread
+        return None  # cannot create thread from message already in a thread
 
     # If the message already has a thread attached to it, fetch and use it
     if message.flags.has_thread:
@@ -181,20 +230,30 @@ async def _get_or_create_thread(message: discord.Message, channel: discord.TextC
             thread = message.guild.get_thread(message.id) if message.guild else None
             if not thread:
                 thread = await client.fetch_channel(message.id)
-            if isinstance(thread, discord.Thread) and not thread.archived and not thread.locked:
-                logger.info(f"Reusing existing active thread {thread.id} from message object")
+            if (
+                isinstance(thread, discord.Thread)
+                and not thread.archived
+                and not thread.locked
+            ):
+                logger.info(
+                    f"Reusing existing active thread {thread.id} from message object"
+                )
                 return thread
         except Exception as fetch_err:
-            logger.error(f"Failed to fetch existing thread for message {message.id}: {fetch_err}")
+            logger.error(
+                f"Failed to fetch existing thread for message {message.id}: {fetch_err}"
+            )
 
     try:
         author = message.author
-        cleaned_title = clean_bot_mention(message.content)[:50]
+        thread_name = f"{thread_prefix} | {author.display_name} — skill-bot chat"
         thread = await message.create_thread(
-            name=f"Q&A: {author.display_name} — {cleaned_title}",
+            name=thread_name[:100],
             auto_archive_duration=1440,  # 24 hours
         )
-        logger.info(f"Created thread {thread.id} for {author.name} — query: {cleaned_title}")
+        logger.info(
+            f"Created thread '{thread.name}' (ID: {thread.id}) for {author.name}"
+        )
         return thread
     except discord.Forbidden:
         logger.error(f"Cannot create thread — missing permissions in channel {channel.id}")
@@ -221,7 +280,7 @@ async def _get_or_create_thread(message: discord.Message, channel: discord.TextC
 def is_query_covered(query: str) -> bool:
     """Check if the query contains keywords covered in .clinerules using word boundaries."""
     q = query.lower()
-    
+
     # Predefined keyword maps based on .clinerules
     categories = {
         "setup": ["setup", "install", "run", "build", "clone", "docker", "env", "start", "dev server", "npm run dev"],
@@ -229,7 +288,7 @@ def is_query_covered(query: str) -> bool:
         "contribute": ["contribute", "contributor", "fork", "pr", "pull request", "issue", "branch", "git", "onboarding"],
         "error": ["error", "exception", "bug", "fail", "crash", "issue", "logs", "broken", "debug", "not working"]
     }
-    
+
     for cat, keywords in categories.items():
         for kw in keywords:
             # Use raw pattern and re.escape for safety, matching word boundaries for the keyword/phrase
@@ -237,6 +296,145 @@ def is_query_covered(query: str) -> bool:
             if re.search(pattern, q):
                 return True
     return False
+
+
+ISSUE_TRIGGER_PATTERN = re.compile(r"\b(create|open|file|raise|make)\s+an?\s+issue\b", re.IGNORECASE)
+
+
+def is_issue_creation_request(query: str) -> bool:
+    """Detect an EXPLICIT ask to open a GitHub issue. Only fires on the words a user actually
+    typed — SkillBot never opens an issue on its own just because it hit a skill gap."""
+    return bool(ISSUE_TRIGGER_PATTERN.search(query))
+
+
+def parse_issue_draft(text: str) -> tuple[str | None, str | None]:
+    """Parse the 'TITLE: ...\\nBODY: ...' format we ask the model to draft an issue in."""
+    title_match = re.search(r"TITLE:\s*(.+)", text, re.IGNORECASE)
+    body_match = re.search(r"BODY:\s*(.+)", text, re.DOTALL | re.IGNORECASE)
+    title = title_match.group(1).strip() if title_match else None
+    body = body_match.group(1).strip() if body_match else None
+    return title, body
+
+
+async def handle_issue_creation_request(
+    thread: discord.Thread,
+    author: discord.User,
+    mapped_repo: str,
+    cleaned_query: str,
+    message: discord.Message,
+) -> None:
+    """Draft and open a GitHub issue from the surrounding discussion — never automatic, only
+    reached when is_issue_creation_request() matched an explicit user ask."""
+    repo_full_name = get_repo_full_name(mapped_repo)
+    if not repo_full_name:
+        await thread.send(
+            f"I don't have a GitHub repo mapped for '{mapped_repo}', so I can't open an issue there."
+        )
+        return
+
+    # The trigger message itself ("create an issue for this") rarely contains the actual
+    # problem — pull the last 3-4 messages so the real description is in view.
+    context_text = await _build_conversation_context(thread, author, cleaned_query, message)
+
+    # If an existing GitHub issue/PR is already part of this discussion, pull its comments too
+    # rather than drafting from Discord lines alone.
+    extra_comments = ""
+    ref_match = re.search(
+        r"https?://github\.com/([^/\s]+)/([^/\s]+)/(?:pull|issues)/(\d+)",
+        f"{cleaned_query}\n{context_text}",
+        re.IGNORECASE,
+    )
+    if ref_match:
+        owner, repo, number = ref_match.groups()
+        extra_comments = await fetch_github_issue_comments(owner, repo, number)
+
+    draft_prompt = (
+        "A contributor wants to open a GitHub issue based on the discussion below. "
+        "Reply in EXACTLY this format, nothing else:\n"
+        "TITLE: <a short, specific issue title>\n"
+        "BODY: <a clear issue body describing the problem/request, using only what's in the discussion below>\n\n"
+        f"Discussion:\n{context_text}\n\n{extra_comments}"
+    )
+    async with ollama_lock:
+        draft_text, used_fallback = await generate_ollama_response(draft_prompt, "")
+
+    if used_fallback:
+        await thread.send("I couldn't reach the local model to draft this issue — please try again shortly.")
+        return
+
+    title, body = parse_issue_draft(draft_text)
+    if not title or not body:
+        await thread.send(
+            "I couldn't draft a clear issue from this discussion — could you restate the problem in one message?"
+        )
+        return
+
+    body_with_attribution = f"{body}\n\n---\n_Requested by @{author.display_name} via Discord._"
+
+    issue_url = await create_github_issue(repo_full_name, title[:256], body_with_attribution)
+    if issue_url:
+        await thread.send(f"Opened: {issue_url}")
+    else:
+        await thread.send("Something went wrong creating the issue — please open it manually or ask a maintainer.")
+
+
+async def _resolve_repo(
+    message: discord.Message, cleaned_query: str, available_repos: list[str]
+) -> tuple[str | None, str | None, str | None]:
+    """Resolve target repository using thread name, keywords, thread history, or LLM classification."""
+    is_in_thread = isinstance(message.channel, discord.Thread)
+
+    if is_in_thread:
+        thread = message.channel
+        mapped_repo = get_repo_from_thread_name(thread.name, available_repos)
+        if mapped_repo:
+            return mapped_repo, f"Thread Name ('{thread.name}')", None
+
+        detected_repo = detect_repo_by_keywords(cleaned_query, available_repos)
+        match_method = None
+        built_context = None
+
+        if detected_repo:
+            match_method = "Query Keywords"
+        else:
+            built_context = await _build_conversation_context(thread, message.author, cleaned_query, message)
+            detected_repo = detect_repo_by_keywords(built_context, available_repos)
+            if detected_repo:
+                match_method = "Recent Thread History Keywords"
+
+        if not detected_repo:
+            logger.info("🤖 Calling Ollama LLM classifier to determine target project...")
+            async with ollama_lock:
+                detected_repo = await classify_repo_with_llm(
+                    cleaned_query, available_repos, OLLAMA_MODEL, OLLAMA_URL, OLLAMA_NUM_CTX
+                )
+            if detected_repo:
+                match_method = "LLM Classifier"
+
+        if detected_repo:
+            new_name = thread.name.replace("[Unassigned]", f"[{detected_repo}]").replace("Unassigned", detected_repo)
+            try:
+                await thread.edit(name=new_name[:100])
+                logger.info(f"Renamed thread {thread.id} to: {new_name}")
+            except Exception as e:
+                logger.error(f"Failed to rename thread {thread.id}: {e}")
+            return detected_repo, match_method, built_context
+
+        return None, None, built_context
+    else:
+        detected_repo = detect_repo_by_keywords(cleaned_query, available_repos)
+        if detected_repo:
+            return detected_repo, "Query Keywords", None
+
+        logger.info("🤖 Calling Ollama LLM classifier for initial message...")
+        async with ollama_lock:
+            detected_repo = await classify_repo_with_llm(
+                cleaned_query, available_repos, OLLAMA_MODEL, OLLAMA_URL, OLLAMA_NUM_CTX
+            )
+        if detected_repo:
+            return detected_repo, "LLM Classifier", None
+
+        return None, None, None
 
 
 async def process_message(message: discord.Message):
@@ -262,14 +460,28 @@ async def process_message(message: discord.Message):
     author = message.author
     cleaned_query = clean_bot_mention(message.content)
 
+    available_repos = get_available_repos()
+
+    logger.info("==================================================")
+    logger.info(f"📥 RECEIVED MESSAGE from '{author.display_name}' ({author.name})")
+    logger.info(f"📍 Location: {'Thread' if is_in_thread else 'Channel'} -> '{message.channel.name}' (ID: {message.channel.id})")
+    logger.info(f"💬 Query: \"{cleaned_query or '(bot mention only)'}\"")
+    logger.info(f"🔍 Discovered Available Projects: {available_repos}")
+
     if is_in_thread:
         thread = message.channel
         if thread.archived or thread.locked:
             logger.warning(f"Thread {thread.id} is archived/locked — cannot respond")
             return
+
+    mapped_repo, match_method, cached_context = await _resolve_repo(message, cleaned_query, available_repos)
+
+    if is_in_thread:
+        thread = message.channel
     else:
         channel = message.channel
-        thread = await _get_or_create_thread(message, channel)
+        thread_prefix = mapped_repo if mapped_repo else "Unassigned"
+        thread = await _get_or_create_thread(message, channel, thread_prefix)
         if not thread:
             await _log_gap(cleaned_query, "thread_creation_failed")
             try:
@@ -280,59 +492,118 @@ async def process_message(message: discord.Message):
                 pass
             return
 
+    # If repository is still not determined, request clarification using .clinerules skill context
+    if not mapped_repo:
+        logger.info("❓ UNMAPPED QUERY: Could not determine target project. Requesting clarification...")
+        skill_context = load_skill_context()
+        if skill_context:
+            fallback_prompt = (
+                f"The user asked: '{cleaned_query}'. "
+                f"No specific repository was matched from available projects ({', '.join(available_repos)}). "
+                f"Politely ask the user which project they need help with or clarify their request."
+            )
+            async with ollama_lock:
+                response_text, _ = await generate_ollama_response(
+                    fallback_prompt,
+                    skill_context,
+                    context_label="Global Bot Guidance (.clinerules — not repository-specific)",
+                )
+            try:
+                await thread.send(response_text)
+                logger.info("📤 Clarification response sent to thread successfully [HTTP 200 OK]")
+            except Exception as e:
+                logger.error(f"Error sending fallback clarification to thread {thread.id}: {e}")
+        else:
+            await send_clarification_request(thread, available_repos)
+            logger.info("📤 Default project list clarification sent to thread [HTTP 200 OK]")
+
+        await _log_gap(
+            cleaned_query, "repo_clarification_needed", thread_id=thread.id
+        )
+        logger.info("==================================================")
+        return
+
+    logger.info(f"✅ MAPPED PROJECT: '{mapped_repo}' (via {match_method})")
+
+    if is_issue_creation_request(cleaned_query):
+        logger.info("📝 EXPLICIT ISSUE-CREATION REQUEST detected — drafting and opening issue")
+        await handle_issue_creation_request(thread, author, mapped_repo, cleaned_query, message)
+        logger.info("==================================================")
+        return
+
     async with ollama_lock:
         try:
             await asyncio.sleep(1)  # let Discord register the new thread
             async with thread.typing():
                 pass
         except Exception as e:
-            logger.warning(f"Could not trigger typing indicator in thread {thread.id}: {e}")
+            logger.warning(
+                f"Could not trigger typing indicator in thread {thread.id}: {e}"
+            )
 
         try:
-            skill_context = load_skill_context()
-            conversation_context = await _build_conversation_context(thread, author, cleaned_query)
-
-            if conversation_context:
-                full_prompt = conversation_context
+            if is_in_thread:
+                # Inside threads: pull up to 3-4 preceding messages + reply targets + primary tagged message
+                if cached_context:
+                    full_prompt = cached_context
+                else:
+                    full_prompt = await _build_conversation_context(
+                        thread, author, cleaned_query, message
+                    )
             else:
+                # Initial message in channel: check if replying to a message or standalone
                 full_prompt = cleaned_query
 
-            # Check if the query has sufficient information/context based on .clinerules
-            if not is_query_covered(cleaned_query):
-                # Pass conversation context explicitly to the LLM so it has thread history for the clarifying question
-                history_str = f"Previous conversation history:\n{conversation_context}\n\n" if conversation_context else ""
-                full_prompt = (
-                    f"{history_str}"
-                    f"The user is asking: '{cleaned_query}'. "
-                    f"This query is not covered by the standard guidelines in .clinerules. "
-                    f"Generate a polite response asking the user to clarify if they need help with: "
-                    f"1. Setting up the project template\n"
-                    f"2. Writing or updating the README\n"
-                    f"3. Contributing to the repository\n"
-                    f"4. Debugging an error\n"
-                    f"Keep the response short, friendly, and under 5 lines."
-                )
+            # Check for external links (e.g. GitHub PRs / Issues) in full_prompt and query
+            external_link_info = await extract_and_fetch_external_links(f"{cleaned_query}\n{full_prompt}")
+
+            # Load repository-specific context + org-wide skills dynamically
+            combined_query_text = f"{cleaned_query} {full_prompt} {external_link_info}"
+            repo_context = load_repo_context(mapped_repo, combined_query_text)
+
+            if external_link_info:
+                # Fetched PR/Issue data is request-specific, not a repository guideline — keep it
+                # in the prompt only, so it isn't duplicated into (or mislabeled as) the
+                # "Repository Context & Guidelines" system block built in generate_ollama_response.
+                full_prompt = f"{external_link_info}\n\n{full_prompt}"
+                link_count = external_link_info.count("--- Fetched GitHub")
+                logger.info(f"🔗 EXTERNAL LINKS: {link_count} fetched, +{len(external_link_info)} chars to prompt")
+
+            context_files = [line for line in repo_context.splitlines() if line.startswith("--- ")]
+            logger.info(
+                f"📄 CONTEXT: {len(context_files)} section(s) {context_files or ['Base Overview']} "
+                f"— system={len(repo_context)} chars, prompt={len(full_prompt)} chars"
+            )
+
+            response_text, used_fallback = await generate_ollama_response(
+                full_prompt, repo_context, has_external_link=bool(external_link_info)
+            )
+
+            # Prefix response with the active repository context header
+            if not used_fallback and not response_text.startswith("According to the"):
+                response_text = f"According to the {mapped_repo} repository context:\n\n{response_text}"
+
+            logger.info(
+                f"✨ RESPONSE: {len(response_text)} chars, fallback={used_fallback} "
+                f"[HTTP 200 OK]"
+            )
+
+            if used_fallback or not repo_context:
                 await _log_gap(
                     cleaned_query,
-                    "insufficient_info",
-                    thread_id=thread.id,
-                )
-
-            response_text, used_fallback = await generate_ollama_response(full_prompt, skill_context)
-
-            if used_fallback or not skill_context:
-                await _log_gap(
-                    cleaned_query,
-                    "ollama_unavailable" if used_fallback else "no_skill_context",
+                    "ollama_unavailable" if used_fallback else "no_repo_context",
                     thread_id=thread.id,
                 )
         except Exception as e:
-            logger.error(f"Unexpected error processing message from {author.name}: {e}")
-            response_text = "An unexpected error occurred. Please try again or ask a maintainer."
-            await _log_gap(cleaned_query, f"processing_error: {e}", thread_id=thread.id)
-
-        if len(response_text) > 1900:
-            response_text = response_text[:1896] + "..."
+            logger.error(
+                f"Unexpected error processing message from {author.name}: {e}"
+            )
+            response_text = (
+                "An unexpected error occurred. Please try again or ask a maintainer."
+            )
+            await _log_gap(
+                cleaned_query, f"processing_error: {e}", thread_id=thread.id
+            )
 
         try:
             await thread.send(response_text)
@@ -379,15 +650,29 @@ async def on_ready():
 
         messages_to_process = []
         if last_bot_msg:
-            async for msg in channel.history(after=last_bot_msg, oldest_first=True):
-                if not msg.author.bot:
-                    messages_to_process.append(msg)
+            candidate_messages = [m async for m in channel.history(after=last_bot_msg, oldest_first=True) if not m.author.bot]
         else:
-            async for msg in channel.history(limit=5, oldest_first=True):
-                if not msg.author.bot:
-                    messages_to_process.append(msg)
+            candidate_messages = [m async for m in channel.history(limit=10, oldest_first=True) if not m.author.bot]
 
-        logger.info(f"Found {len(messages_to_process)} missed messages. Processing...")
+        for msg in candidate_messages:
+            already_answered = False
+            if msg.flags.has_thread:
+                try:
+                    thread = msg.guild.get_thread(msg.id) if msg.guild else None
+                    if not thread:
+                        thread = await client.fetch_channel(msg.id)
+                    if isinstance(thread, discord.Thread):
+                        async for t_msg in thread.history(limit=15):
+                            if t_msg.author.id == client.user.id:
+                                already_answered = True
+                                break
+                except Exception:
+                    pass
+
+            if not already_answered:
+                messages_to_process.append(msg)
+
+        logger.info(f"Found {len(messages_to_process)} un-answered missed messages. Processing...")
         for msg in messages_to_process:
             await process_message(msg)
 

@@ -19,6 +19,58 @@ from repo_metadata import REPO_METADATA
 # rather than trying to block private/internal IP ranges for an open-ended fetcher.
 ALLOWED_EXTERNAL_DOMAINS = {"stackoverflow.com"}
 
+# Context size bounds for load_repo_context
+DEFAULT_MAX_FILE_CHARS = 2000
+DEFAULT_MAX_TOTAL_CONTEXT_CHARS = 12000
+TRUNCATION_MARKER = "\n... (truncated)"
+
+
+def _read_capped_file(file_path: Path, max_chars: int = DEFAULT_MAX_FILE_CHARS) -> str:
+    """Read a Markdown context file up to max_chars characters.
+    If the file content exceeds max_chars, return truncated content with a truncation marker.
+    """
+    with open(file_path, "r", encoding="utf-8") as f:
+        content = f.read()
+    if len(content) > max_chars:
+        return content[:max_chars] + TRUNCATION_MARKER
+    return content
+
+
+def _append_bounded_section(
+    context_parts: list[str],
+    header: str,
+    content: str,
+    max_total_chars: int = DEFAULT_MAX_TOTAL_CONTEXT_CHARS,
+) -> bool:
+    """Append a section header and content to context_parts while enforcing max_total_chars.
+    Returns True if section was added in full, False if section was truncated or skipped due to budget.
+    """
+    # Current assembled length if joined with "\n\n"
+    current_len = sum(len(p) for p in context_parts) + (len("\n\n") * max(0, len(context_parts) - 1))
+    separator_len = len("\n\n") if context_parts else 0
+
+    remaining_budget = max_total_chars - current_len - separator_len
+    if remaining_budget <= 0:
+        return False
+
+    prefix = f"{header}\n"
+    if len(prefix) >= remaining_budget:
+        return False
+
+    content_budget = remaining_budget - len(prefix)
+    if len(content) > content_budget:
+        marker = TRUNCATION_MARKER
+        if content_budget > len(marker):
+            capped_content = content[: content_budget - len(marker)] + marker
+        else:
+            capped_content = marker[:content_budget]
+        context_parts.append(f"{prefix}{capped_content}")
+        return False
+    else:
+        context_parts.append(f"{prefix}{content}")
+        return True
+
+
 
 def get_repo_details(repo_name: str) -> dict:
     """Get metadata for a repository directly from REPO_METADATA."""
@@ -142,15 +194,25 @@ def _keyword_hit(text: str, keyword: str) -> bool:
     return re.search(rf"\b{re.escape(keyword)}\b", text) is not None
 
 
-def load_repo_context(repo_name: str, query: str = "") -> str:
+def load_repo_context(
+    repo_name: str,
+    query: str = "",
+    max_file_chars: int = DEFAULT_MAX_FILE_CHARS,
+    max_total_chars: int = DEFAULT_MAX_TOTAL_CONTEXT_CHARS,
+) -> str:
     """Dynamically load context: ALWAYS load operational-data.md and architecture.md,
-    and dynamically load specific instruction/core files based on user query intent."""
+    and dynamically load specific instruction/core files based on user query intent.
+    Enforces per-file size limits and an overall total context budget."""
     context_parts = []
     repo_path = get_repo_path(repo_name)
     if not repo_path:
         return ""
 
-    context_parts.append(f"=== REPOSITORY: {repo_name} ===")
+    repo_header = f"=== REPOSITORY: {repo_name} ==="
+    if len(repo_header) > max_total_chars:
+        return repo_header[:max_total_chars]
+    context_parts.append(repo_header)
+
     q = query.lower()
 
     agent_dir = repo_path / ".agent"
@@ -159,8 +221,13 @@ def load_repo_context(repo_name: str, query: str = "") -> str:
         ops_md = agent_dir / "info" / "operational-data.md"
         if ops_md.exists():
             try:
-                with open(ops_md, "r", encoding="utf-8") as f:
-                    context_parts.append(f"--- Operational Data (.agent/info/operational-data.md) ---\n{f.read()}")
+                content = _read_capped_file(ops_md, max_chars=max_file_chars)
+                _append_bounded_section(
+                    context_parts,
+                    "--- Operational Data (.agent/info/operational-data.md) ---",
+                    content,
+                    max_total_chars=max_total_chars,
+                )
             except Exception as e:
                 logger.error(f"Error reading operational data file {ops_md}: {e}")
 
@@ -168,8 +235,13 @@ def load_repo_context(repo_name: str, query: str = "") -> str:
         arch_md = agent_dir / "core" / "architecture.md"
         if arch_md.exists():
             try:
-                with open(arch_md, "r", encoding="utf-8") as f:
-                    context_parts.append(f"--- Core Architecture (.agent/core/architecture.md) ---\n{f.read()}")
+                content = _read_capped_file(arch_md, max_chars=max_file_chars)
+                _append_bounded_section(
+                    context_parts,
+                    "--- Core Architecture (.agent/core/architecture.md) ---",
+                    content,
+                    max_total_chars=max_total_chars,
+                )
             except Exception as e:
                 logger.error(f"Error reading architecture file {arch_md}: {e}")
 
@@ -198,8 +270,13 @@ def load_repo_context(repo_name: str, query: str = "") -> str:
                 if should_load:
                     rel_path = core_file.relative_to(repo_path)
                     try:
-                        with open(core_file, "r", encoding="utf-8") as f:
-                            context_parts.append(f"--- Core Context ({rel_path}) ---\n{f.read()}")
+                        content = _read_capped_file(core_file, max_chars=max_file_chars)
+                        _append_bounded_section(
+                            context_parts,
+                            f"--- Core Context ({rel_path}) ---",
+                            content,
+                            max_total_chars=max_total_chars,
+                        )
                     except Exception as e:
                         logger.error(f"Error reading core file {core_file}: {e}")
 
@@ -229,8 +306,13 @@ def load_repo_context(repo_name: str, query: str = "") -> str:
                 if should_load:
                     rel_path = md_file.relative_to(repo_path)
                     try:
-                        with open(md_file, "r", encoding="utf-8") as f:
-                            context_parts.append(f"--- Instruction ({rel_path}) ---\n{f.read()}")
+                        content = _read_capped_file(md_file, max_chars=max_file_chars)
+                        _append_bounded_section(
+                            context_parts,
+                            f"--- Instruction ({rel_path}) ---",
+                            content,
+                            max_total_chars=max_total_chars,
+                        )
                     except Exception as e:
                         logger.error(f"Error reading instruction file {md_file}: {e}")
 
@@ -241,10 +323,13 @@ def load_repo_context(repo_name: str, query: str = "") -> str:
             skill_name = skill_file.parent.name.lower()
             if not q or _keyword_hit(q, skill_name):
                 try:
-                    with open(skill_file, "r", encoding="utf-8") as f:
-                        context_parts.append(
-                            f"--- Local Skill ({skill_file.parent.name}) ---\n{f.read()}"
-                        )
+                    content = _read_capped_file(skill_file, max_chars=max_file_chars)
+                    _append_bounded_section(
+                        context_parts,
+                        f"--- Local Skill ({skill_file.parent.name}) ---",
+                        content,
+                        max_total_chars=max_total_chars,
+                    )
                 except Exception as e:
                     logger.error(f"Error reading {skill_file}: {e}")
 
@@ -254,10 +339,13 @@ def load_repo_context(repo_name: str, query: str = "") -> str:
         readme_md = repo_path / "README.md"
         if readme_md.exists():
             try:
-                with open(readme_md, "r", encoding="utf-8") as f:
-                    content = f.read()
-                    excerpt = content[:2000] + ("\n... (truncated)" if len(content) > 2000 else "")
-                    context_parts.append(f"--- README.md ---\n{excerpt}")
+                content = _read_capped_file(readme_md, max_chars=max_file_chars)
+                _append_bounded_section(
+                    context_parts,
+                    "--- README.md ---",
+                    content,
+                    max_total_chars=max_total_chars,
+                )
             except Exception as e:
                 logger.error(f"Error reading {readme_md}: {e}")
 
@@ -281,8 +369,13 @@ def load_repo_context(repo_name: str, query: str = "") -> str:
 
                     if should_load_org_skill:
                         try:
-                            with open(skill_file, "r", encoding="utf-8") as f:
-                                context_parts.append(f"--- Org-Wide Skill ({skill_dir.name}) ---\n{f.read()}")
+                            content = _read_capped_file(skill_file, max_chars=max_file_chars)
+                            _append_bounded_section(
+                                context_parts,
+                                f"--- Org-Wide Skill ({skill_dir.name}) ---",
+                                content,
+                                max_total_chars=max_total_chars,
+                            )
                         except Exception as e:
                             logger.error(f"Error reading org skill {skill_file}: {e}")
 

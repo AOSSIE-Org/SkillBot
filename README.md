@@ -16,6 +16,8 @@ It works for any organization or project that uses Discord. It runs on a local m
 
 At startup and once a day, it copies the docs you listed from each repository into `repos/`. For each question it sends the local model only the files that question needs, so it runs well on an ordinary computer.
 
+**Example:** [aossie-skillbot](https://github.com/kpj2006/aossie-skillbot) is a copy of this template set up for AOSSIE, covering 52 projects. Its [`repo_metadata.py`](https://github.com/kpj2006/aossie-skillbot/blob/main/repo_metadata.py) shows a real configuration: keywords, doc folders, a shared rules repository, and repositories on non-default branches.
+
 ---
 
 ## 🚀 Key Features
@@ -68,7 +70,7 @@ REPO_METADATA = {
 }
 ```
 
-In `docs`, a path ending in `.md` copies that one file, and any other path copies every `.md` file in that folder.
+In `docs`, a path ending in `.md` copies that one file, and any other path copies every `.md` file in that folder. For a full working list, see [AOSSIE's `repo_metadata.py`](https://github.com/kpj2006/aossie-skillbot/blob/main/repo_metadata.py).
 
 * **List only the repositories contributors ask about.** Every entry is one more option the local model has to choose between when a question doesn't name a project, so a short list gives better answers than your whole organization.
 * **A shared skills or policies repository is just another entry.** Give it keywords such as `"onboarding"` or `"ai policy"` so those questions reach it.
@@ -132,12 +134,6 @@ On startup the bot copies the docs into `repos/`, then answers questions in the 
 
 * **Read `gap_log.json`.** It lists questions the bot couldn't route or had no docs for, which tells you which docs to write next, or which keyword to add to `repo_metadata.py`.
 * **Get updates** by pulling from the Skill Bot repository you made your copy from: `git remote add upstream <its URL>`, then `git pull upstream main`. `repos/` is not tracked by git, so updates never touch your docs. If `repo_metadata.py` conflicts, keep your version.
-
----
-
-## 🗺️ Roadmap
-
-Planned work is listed in [roadmap.md](./roadmap.md).
 
 ---
 

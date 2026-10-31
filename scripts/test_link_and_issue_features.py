@@ -241,22 +241,29 @@ def section_6_parse_issue_draft():
 def section_7_get_repo_full_name():
     print("\n--- 7. get_repo_full_name edge cases ---")
 
-    check(
-        "plain url (no branch suffix): GSoC-Info-Assistant",
-        rr.get_repo_full_name("GSoC-Info-Assistant") == "kpj2006/GSoC-Info-Assistant",
-    )
-    check(
-        "url with /tree/<branch> suffix stripped: SocialShareButton",
-        rr.get_repo_full_name("SocialShareButton") == "kpj2006/SocialShareButton",
-    )
-    check(
-        "url with /tree/<branch> suffix stripped: OrgExplorer",
-        rr.get_repo_full_name("OrgExplorer") == "kpj2006/OrgExplorer",
-    )
-    check(
-        "unknown repo name (not in REPO_METADATA) -> None",
-        rr.get_repo_full_name("Definitely-Not-A-Real-Repo-Name") is None,
-    )
+    # REPO_METADATA is built from whatever is in repos/, so supply known entries here.
+    fixtures = {
+        "Plain-Repo": {"url": "https://github.com/example-org/Plain-Repo", "description": "", "keywords": []},
+        "Branch-Repo": {"url": "https://github.com/someone/Branch-Repo/tree/dev", "description": "", "keywords": []},
+    }
+    saved = dict(rr.REPO_METADATA)
+    rr.REPO_METADATA.update(fixtures)
+    try:
+        check(
+            "plain url (no branch suffix): Plain-Repo",
+            rr.get_repo_full_name("Plain-Repo") == "example-org/Plain-Repo",
+        )
+        check(
+            "url with /tree/<branch> suffix stripped: Branch-Repo",
+            rr.get_repo_full_name("Branch-Repo") == "someone/Branch-Repo",
+        )
+        check(
+            "unknown repo name (not in REPO_METADATA) -> None",
+            rr.get_repo_full_name("Definitely-Not-A-Real-Repo-Name") is None,
+        )
+    finally:
+        rr.REPO_METADATA.clear()
+        rr.REPO_METADATA.update(saved)
 
 
 async def section_8_create_github_issue_mocked():

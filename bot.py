@@ -5,7 +5,7 @@ import logging
 import discord
 import httpx
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from dotenv import load_dotenv
 from repo_router import (
@@ -19,12 +19,14 @@ from repo_router import (
     get_repo_full_name,
     fetch_github_issue_comments,
     create_github_issue,
+    README_FALLBACK_LABEL,
 )
+from repo_metadata import REPO_METADATA
 
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger('aossie-bot')
+logger = logging.getLogger('skillbot')
 
 # Load environment variables
 load_dotenv()
@@ -33,6 +35,11 @@ DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 DISCORD_CHANNEL_ID = os.getenv('DISCORD_CHANNEL_ID')
 DISCORD_CHANNEL_ID_INT = None
 OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'llama3.2')
+ORG_NAME = os.getenv('ORG_NAME', '').strip()
+# Hours between refreshes of repos/ from the repositories in repo_metadata.py. 0 turns it off.
+SYNC_INTERVAL_HOURS = float(os.getenv('SYNC_INTERVAL_HOURS', '24'))
+# On startup, answer missed questions only if they are newer than this.
+BACKLOG_MAX_AGE_HOURS = float(os.getenv('BACKLOG_MAX_AGE_HOURS', '24'))
 SKILL_FILE_PATH = os.getenv('SKILL_FILE_PATH', '.clinerules')
 OLLAMA_URL = "http://localhost:11434/api/generate"
 # Ollama's own runtime default measured via `ollama ps` on this machine (no num_ctx was set
@@ -115,7 +122,11 @@ async def generate_ollama_response(
     context_label: str = "Repository Context & Guidelines",
 ) -> tuple[str, bool]:
     """Send prompt to local Ollama instance. Returns (response_text, used_llm_fallback)."""
-    base_instructions = "You are an expert open-source maintainer and contributor assistant for AOSSIE.\n"
+    base_instructions = (
+        f"You are an expert open-source maintainer and contributor assistant for {ORG_NAME}.\n"
+        if ORG_NAME
+        else "You are an expert open-source maintainer and contributor assistant.\n"
+    )
     if has_external_link:
         # Only add PR/Issue-review framing when a link was actually fetched — otherwise it's
         # irrelevant noise competing for attention in every single answer.
@@ -378,6 +389,27 @@ async def handle_issue_creation_request(
         await thread.send("Something went wrong creating the issue — please open it manually or ask a maintainer.")
 
 
+DISCORD_MESSAGE_LIMIT = 2000
+
+
+async def send_long(thread, text: str):
+    """Send text as one or more messages, since Discord rejects messages over 2000 characters.
+    Splits at paragraph or line breaks where possible."""
+    chunks = []
+    while len(text) > DISCORD_MESSAGE_LIMIT:
+        cut = text.rfind("\n\n", 0, DISCORD_MESSAGE_LIMIT)
+        if cut < DISCORD_MESSAGE_LIMIT // 2:
+            cut = text.rfind("\n", 0, DISCORD_MESSAGE_LIMIT)
+        if cut < DISCORD_MESSAGE_LIMIT // 2:
+            cut = DISCORD_MESSAGE_LIMIT
+        chunks.append(text[:cut])
+        text = text[cut:].lstrip("\n")
+    chunks.append(text)
+    for chunk in chunks:
+        if chunk.strip():
+            await thread.send(chunk)
+
+
 async def _resolve_repo(
     message: discord.Message, cleaned_query: str, available_repos: list[str]
 ) -> tuple[str | None, str | None, str | None]:
@@ -509,7 +541,7 @@ async def process_message(message: discord.Message):
                     context_label="Global Bot Guidance (.clinerules — not repository-specific)",
                 )
             try:
-                await thread.send(response_text)
+                await send_long(thread, response_text)
                 logger.info("📤 Clarification response sent to thread successfully [HTTP 200 OK]")
             except Exception as e:
                 logger.error(f"Error sending fallback clarification to thread {thread.id}: {e}")
@@ -557,7 +589,7 @@ async def process_message(message: discord.Message):
             # Check for external links (e.g. GitHub PRs / Issues) in full_prompt and query
             external_link_info = await extract_and_fetch_external_links(f"{cleaned_query}\n{full_prompt}")
 
-            # Load repository-specific context + org-wide skills dynamically
+            # Load repository-specific context dynamically
             combined_query_text = f"{cleaned_query} {full_prompt} {external_link_info}"
             repo_context = load_repo_context(mapped_repo, combined_query_text)
 
@@ -574,6 +606,26 @@ async def process_message(message: discord.Message):
                 f"📄 CONTEXT: {len(context_files)} section(s) {context_files or ['Base Overview']} "
                 f"— system={len(repo_context)} chars, prompt={len(full_prompt)} chars"
             )
+
+            # No doc matched the question: answering would mean the model making it up.
+            # A guessed repository's README fallback doesn't count: it would answer about the wrong project.
+            matched_files = [f for f in context_files if f != README_FALLBACK_LABEL]
+            guessed = match_method == "LLM Classifier"
+            if not external_link_info and (not context_files or (guessed and not matched_files)):
+                if guessed:
+                    # The repository was only a guess, so ask instead of answering about the wrong one.
+                    logger.info("❓ NO DOCS for a guessed repository — asking which project instead")
+                    await send_clarification_request(thread, available_repos)
+                    await _log_gap(cleaned_query, "repo_clarification_needed", thread_id=thread.id)
+                else:
+                    logger.info(f"📭 NO DOCS in {mapped_repo} match this question")
+                    await thread.send(
+                        f"I couldn't find anything about this in the {mapped_repo} docs, so I won't guess. "
+                        "I've noted the question for the maintainers; you can also ask them directly here."
+                    )
+                    await _log_gap(cleaned_query, "no_matching_docs", thread_id=thread.id)
+                logger.info("==================================================")
+                return
 
             response_text, used_fallback = await generate_ollama_response(
                 full_prompt, repo_context, has_external_link=bool(external_link_info)
@@ -606,7 +658,7 @@ async def process_message(message: discord.Message):
             )
 
         try:
-            await thread.send(response_text)
+            await send_long(thread, response_text)
         except discord.Forbidden:
             logger.error(f"Cannot send message to thread {thread.id}")
         except discord.HTTPException as e:
@@ -629,9 +681,34 @@ async def wait_for_ollama():
         await asyncio.sleep(10)
 
 
+def _sync_context_files():
+    """Refresh repos/ from GitHub. Blocking; run in a worker thread."""
+    from scripts.update_subtrees import sync_all_subtrees
+    sync_all_subtrees()
+
+
+async def context_sync_loop():
+    while True:
+        logger.info(f"Syncing docs for the {len(REPO_METADATA)} repositories in repo_metadata.py...")
+        try:
+            await asyncio.to_thread(_sync_context_files)
+            logger.info("Context sync done.")
+        except (Exception, SystemExit) as e:
+            logger.error(f"Context sync failed, keeping the previous docs: {e}")
+        await asyncio.sleep(SYNC_INTERVAL_HOURS * 3600)
+
+
+context_sync_task = None
+
+
 @client.event
 async def on_ready():
+    global context_sync_task
     logger.info(f"Logged in as {client.user.name} ({client.user.id})")
+
+    # on_ready fires again after every reconnect; start the sync loop only once.
+    if SYNC_INTERVAL_HOURS > 0 and context_sync_task is None:
+        context_sync_task = asyncio.create_task(context_sync_loop())
 
     # Wait for Ollama to be ready before processing the backlog
     await wait_for_ollama()
@@ -649,10 +726,14 @@ async def on_ready():
                 break
 
         messages_to_process = []
+        # Only catch up on recent questions: answering week-old messages surprises people,
+        # and a first start in a busy channel would otherwise reply to its whole history.
+        oldest_allowed = datetime.now(timezone.utc) - timedelta(hours=BACKLOG_MAX_AGE_HOURS)
         if last_bot_msg:
-            candidate_messages = [m async for m in channel.history(after=last_bot_msg, oldest_first=True) if not m.author.bot]
+            after = max(last_bot_msg.created_at, oldest_allowed)
+            candidate_messages = [m async for m in channel.history(after=after, oldest_first=True) if not m.author.bot]
         else:
-            candidate_messages = [m async for m in channel.history(limit=10, oldest_first=True) if not m.author.bot]
+            candidate_messages = [m async for m in channel.history(limit=10, after=oldest_allowed, oldest_first=True) if not m.author.bot]
 
         for msg in candidate_messages:
             already_answered = False
@@ -679,7 +760,7 @@ async def on_ready():
     except Exception as e:
         logger.error(f"Error fetching missed messages: {e}")
 
-    logger.info("AOSSIE Contributor Assistant MVP is fully ready.")
+    logger.info("Skill Bot is fully ready.")
 
 
 @client.event

@@ -8,7 +8,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 
-logger = logging.getLogger("aossie-bot.router")
+logger = logging.getLogger("skillbot.router")
 
 from repo_metadata import REPO_METADATA
 
@@ -26,34 +26,50 @@ def get_repo_details(repo_name: str) -> dict:
         repo_name,
         {
             "url": "",
-            "description": f"AOSSIE project: {repo_name}",
+            "description": f"Project: {repo_name}",
             "keywords": [repo_name.lower()],
         },
     )
+
+
+# Names and keywords shorter than this must appear as whole words: "info" inside "information"
+# or "rein" inside "reinstall" is not a mention of the Info or Rein repository.
+MIN_SUBSTRING_MATCH = 6
+
+
+def _norm(text: str) -> str:
+    return re.sub(r"[\s\-_.]", "", text.lower())
+
+
+def _match_length(text_lower: str, text_norm: str, phrase: str) -> int:
+    """Length of the phrase if the text mentions it, else 0."""
+    p_norm = _norm(phrase)
+    if not p_norm:
+        return 0
+    if _keyword_hit(text_lower, phrase.lower()) or (len(p_norm) >= MIN_SUBSTRING_MATCH and p_norm in text_norm):
+        return len(p_norm)
+    return 0
+
+
+def _best_repo_match(text: str, available_repos: list[str]) -> str | None:
+    """The repository whose name or keyword the text mentions most specifically. The longest
+    match wins, so "Agora Android" picks Agora-Android over Agora."""
+    t_lower, t_norm = text.lower(), _norm(text)
+    best, best_len = None, 0
+    for repo in available_repos:
+        phrases = [repo] + get_repo_details(repo).get("keywords", [])
+        length = max(_match_length(t_lower, t_norm, p) for p in phrases)
+        if length > best_len:
+            best, best_len = repo, length
+    return best
 
 
 def get_repo_from_thread_name(
     thread_name: str, available_repos: list[str]
 ) -> str | None:
     """Check if thread_name matches a repo name OR any of its keywords from REPO_METADATA."""
-    norm_thread = re.sub(r"[\s\-_]", "", thread_name.lower())
-    t_lower = thread_name.lower()
-
-    for repo in available_repos:
-        # 1. Match against repository key name (normalized)
-        norm_repo = re.sub(r"[\s\-_]", "", repo.lower())
-        if norm_repo and (norm_repo in norm_thread or norm_thread in norm_repo):
-            return repo
-
-        # 2. Match against keywords in REPO_METADATA for this repo
-        details = get_repo_details(repo)
-        for kw in details.get("keywords", []):
-            kw_lower = kw.lower()
-            kw_norm = re.sub(r"[\s\-_]", "", kw_lower)
-            if kw_lower in t_lower or (len(kw_norm) > 3 and kw_norm in norm_thread):
-                return repo
-
-    return None
+    # Bot threads are named "<Repo> | <user> — skill-bot chat"; only the first part names the repo.
+    return _best_repo_match(thread_name.split(" | ")[0], available_repos)
 
 
 def get_available_repos() -> list[str]:
@@ -76,21 +92,7 @@ def get_repo_path(repo_name: str) -> Path | None:
 
 def detect_repo_by_keywords(query: str, available_repos: list[str]) -> str | None:
     """Detect matching repository based on case-insensitive keyword mappings and normalization."""
-    q_lower = query.lower()
-    q_norm = re.sub(r"[\s\-_]", "", q_lower)
-
-    for repo in available_repos:
-        norm_repo = re.sub(r"[\s\-_]", "", repo.lower())
-        if norm_repo and norm_repo in q_norm:
-            return repo
-
-        details = get_repo_details(repo)
-        for kw in details["keywords"]:
-            kw_lower = kw.lower()
-            kw_norm = re.sub(r"[\s\-_]", "", kw_lower)
-            if kw_lower in q_lower or (len(kw_norm) > 3 and kw_norm in q_norm):
-                return repo
-    return None
+    return _best_repo_match(query, available_repos)
 
 
 async def classify_repo_with_llm(
@@ -206,7 +208,7 @@ def load_repo_context(repo_name: str, query: str = "") -> str:
         # 4. DYNAMIC INTENT DETECTION: Instructions (.agent/instructions/*.md)
         inst_dir = agent_dir / "instructions"
         if inst_dir.exists():
-            setup_keywords = ["setup", "install", "build", "run", "env", "environment", "dependency", "dependencies", "npm", "yarn", "pnpm", "start", "dev"]
+            setup_keywords = ["setup", "set up", "install", "build", "run", "env", "environment", "dependency", "dependencies", "npm", "yarn", "pnpm", "start", "dev"]
             testing_keywords = ["test", "testing", "jest", "spec", "coverage", "assert", "check"]
             deploy_keywords = ["deploy", "deployment", "ci", "cd", "release", "action", "workflow", "publish"]
 
@@ -261,32 +263,93 @@ def load_repo_context(repo_name: str, query: str = "") -> str:
             except Exception as e:
                 logger.error(f"Error reading {readme_md}: {e}")
 
-    # 7. DYNAMIC INTENT DETECTION: Org-Wide Skills (org-wide-skills/*/SKILL.md)
-    org_skills_dir = Path("org-wide-skills")
-    if not org_skills_dir.exists():
-        org_skills_dir = repo_path.parent.parent / "org-wide-skills"
+    # 7. DYNAMIC INTENT DETECTION: Other docs listed in repo_metadata.py "docs"
+    if q:
+        context_parts.extend(_load_other_docs(repo_path, q))
 
-    if org_skills_dir.exists():
-        mcp_keywords = ["mcp", "github", "playwright", "puppeteer", "external link", "link", "pr", "issue", "http", "https", "browser", "ui test", "test ui"]
-        for skill_dir in org_skills_dir.iterdir():
-            if skill_dir.is_dir():
-                skill_file = skill_dir / "SKILL.md"
-                if skill_file.exists():
-                    s_name = skill_dir.name.lower()
-                    should_load_org_skill = False
-                    if s_name == "mcp-integration" and any(_keyword_hit(q, kw) for kw in mcp_keywords):
-                        should_load_org_skill = True
-                    elif _keyword_hit(q, s_name):
-                        should_load_org_skill = True
-
-                    if should_load_org_skill:
-                        try:
-                            with open(skill_file, "r", encoding="utf-8") as f:
-                                context_parts.append(f"--- Org-Wide Skill ({skill_dir.name}) ---\n{f.read()}")
-                        except Exception as e:
-                            logger.error(f"Error reading org skill {skill_file}: {e}")
+    # 8. FALLBACK: nothing matched, but the repository was named; its README is the best overview.
+    readme_md = repo_path / "README.md"
+    if len(context_parts) == 1 and readme_md.exists():
+        try:
+            content = readme_md.read_text(encoding="utf-8")
+            excerpt = content[:2000] + ("\n... (truncated)" if len(content) > 2000 else "")
+            context_parts.append(f"{README_FALLBACK_LABEL}\n{excerpt}")
+        except Exception as e:
+            logger.error(f"Error reading {readme_md}: {e}")
 
     return "\n\n".join(context_parts)
+
+
+README_FALLBACK_LABEL = "--- README.md (fallback: no doc matched the question) ---"
+
+
+# Docs outside .agent/, skills/ and README.md can be any .md a maintainer listed, so they are
+# only sent when the question is about them, and under a fixed budget: a long "docs" list
+# must never flood the local model's context.
+OTHER_DOCS_BUDGET = 4000
+OTHER_DOC_EXCERPT = 2000
+# (words that mark a doc's topic in its file or folder name, question keywords for that topic)
+DOC_TOPICS = [
+    (("setup", "install", "getting", "quickstart", "develop"),
+     ["setup", "set up", "install", "build", "run", "env", "environment", "dependency", "dependencies", "start", "dev"]),
+    (("contribut", "onboard"),
+     ["contribute", "contributing", "contributor", "first issue", "onboarding"]),
+    (("test",), ["test", "testing", "coverage", "spec"]),
+    (("deploy", "release", "ci"), ["deploy", "deployment", "release", "ci", "workflow", "publish"]),
+    (("architect", "design", "structure"), ["architecture", "design", "structure", "folder"]),
+    (("polic", "conduct", "rules"), ["policy", "ai", "rules", "conduct", "allowed", "disclosure"]),
+]
+
+
+def _doc_name(doc: Path) -> str:
+    """A doc's topic name: its folder for a SKILL.md ('contributor-onboarding'), else its file name."""
+    return (doc.parent.name if doc.stem.lower() == "skill" else doc.stem).lower()
+
+
+def _doc_score(name: str, q: str) -> int:
+    """How directly a doc's name matches the question; 0 means don't send it."""
+    if _keyword_hit(q, name) or _keyword_hit(q, re.sub(r"[-_]+", " ", name)):
+        return 10 + len(name)  # a longer name is a more specific match: "pictopy" beats "ideas"
+    tokens = re.split(r"[-_.\s]+", name)
+    # Name words the question uses ("ai-policy-rules" for "what is the AI policy?")
+    # ("Roles/Mentors.md" also counts for "mentor")
+    score = 2 * sum(
+        1 for t in tokens
+        if len(t) > 1 and (_keyword_hit(q, t) or (len(t) > 4 and t.endswith("s") and _keyword_hit(q, t[:-1])))
+    )
+    for topic_words, question_keywords in DOC_TOPICS:
+        # Short topic words ("ci") must be a whole token, so "special" is not a CI doc.
+        named = any(t == w or (len(w) > 3 and w in t) for t in tokens for w in topic_words)
+        if named and any(_keyword_hit(q, kw) for kw in question_keywords):
+            score += 1
+    return score
+
+
+def _load_other_docs(repo_path: Path, q: str) -> list[str]:
+    candidates = []
+    for doc in repo_path.rglob("*.md"):
+        rel = doc.relative_to(repo_path).as_posix()
+        if rel == "README.md" or rel.startswith(".agent/") or rel.startswith("skills/"):
+            continue  # handled by steps 1-6
+        score = _doc_score(_doc_name(doc), q)
+        if score:
+            # Folders the question names make a doc more specific ("gsoc 2026" -> .../2026/...).
+            score += sum(1 for part in Path(rel).parent.parts if _keyword_hit(q, part.lower()))
+            candidates.append((-score, rel, doc))
+
+    parts, used = [], 0
+    for _, rel, doc in sorted(candidates):  # best match first
+        try:
+            content = doc.read_text(encoding="utf-8")
+        except Exception as e:
+            logger.error(f"Error reading {doc}: {e}")
+            continue
+        excerpt = content[:OTHER_DOC_EXCERPT] + ("\n... (truncated)" if len(content) > OTHER_DOC_EXCERPT else "")
+        if used + len(excerpt) > OTHER_DOCS_BUDGET:
+            continue  # a smaller, lower-ranked doc may still fit
+        parts.append(f"--- Doc ({rel}) ---\n{excerpt}")
+        used += len(excerpt)
+    return parts
 
 
 async def fetch_github_link_info(url: str) -> str | None:
@@ -547,12 +610,18 @@ async def send_clarification_request(
     thread: discord.Thread, available_repos: list[str]
 ):
     """Politely ask the user to clarify which project they need help with."""
+    # Discord rejects messages over 2000 characters, so a large organization gets a short list.
+    list_budget = 1500
     repos_lines = []
     for repo in available_repos:
         details = get_repo_details(repo)
-        repos_lines.append(
-            f"- **{repo}** ([GitHub Link]({details['url']})): {details['description']}"
-        )
+        url = details.get("url", "")
+        link = f" ([GitHub Link]({url}))" if url else ""
+        line = f"- **{repo}**{link}: {details.get('description', '')[:80]}"
+        if sum(len(l) + 1 for l in repos_lines) + len(line) > list_budget:
+            repos_lines.append(f"- ...and {len(available_repos) - len(repos_lines)} more")
+            break
+        repos_lines.append(line)
 
     repos_list = "\n".join(repos_lines)
     msg = (

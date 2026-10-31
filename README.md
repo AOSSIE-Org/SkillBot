@@ -1,118 +1,32 @@
-<!-- Don't delete it -->
-<div name="readme-top"></div>
-
-<!-- Organization Logo -->
-<div align="center" style="display: flex; align-items: center; justify-content: center; gap: 16px;">
-  <img alt="AOSSIE" src="public/aossie-logo.svg" width="175">
-  <img alt="Skills Ecosystem" src="public/skills-logo.svg" width="175" />
-</div>
-
-&nbsp;
-
-<!-- Organization Name -->
 <div align="center">
+  <img src="public/skill_logo.png" alt="Skill Bot logo" width="175" />
 
-[![Static Badge](https://img.shields.io/badge/aossie.org/SkillBot-228B22?style=for-the-badge&labelColor=FFC517)](https://github.com/AOSSIE-Org/SkillBot)
-
-<!-- Correct deployed url to be added -->
-
+<h1>Skill Bot</h1>
+<h3>A free, local Discord bot that answers contributor questions from your repositories' own docs</h3>
 </div>
 
-<!-- Organization/Project Social Handles -->
-<p align="center">
-<!-- Telegram -->
-<a href="https://t.me/StabilityNexus">
-<img src="https://img.shields.io/badge/Telegram-black?style=flat&logo=telegram&logoColor=white&logoSize=auto&color=24A1DE" alt="Telegram Badge"/></a>
-&nbsp;&nbsp;
-<!-- X (formerly Twitter) -->
-<a href="https://x.com/aossie_org">
-<img src="https://img.shields.io/twitter/follow/aossie_org" alt="X (formerly Twitter) Badge"/></a>
-&nbsp;&nbsp;
-<!-- Discord -->
-<a href="https://discord.gg/hjUhu33uAn">
-<img src="https://img.shields.io/discord/1022871757289422898?style=flat&logo=discord&logoColor=white&logoSize=auto&label=Discord&labelColor=5865F2&color=57F287" alt="Discord Badge"/></a>
-&nbsp;&nbsp;
-<!-- LinkedIn -->
-<a href="https://www.linkedin.com/company/aossie/">
-  <img src="https://img.shields.io/badge/LinkedIn-black?style=flat&logo=LinkedIn&logoColor=white&logoSize=auto&color=0A66C2" alt="LinkedIn Badge"></a>
-&nbsp;&nbsp;
-<!-- Youtube -->
-<a href="https://www.youtube.com/@AOSSIE-Org">
-  <img src="https://img.shields.io/youtube/channel/subscribers/UCKVVLbawY7Gej_3o2WKsoiA?style=flat&logo=youtube&logoColor=white%20&logoSize=auto&labelColor=FF0000&color=FF0000" alt="Youtube Badge"></a>
+**Skill Bot** is a Discord bot that answers contributors' questions about your project's repositories, using each repository's own Markdown docs as its source.
 
+It works for any organization or project that uses Discord. It runs on a local model, so there are no API fees and no rate limits.
 
+* **Why:** contributors ask the same setup and "where do I start" questions again and again on Discord, and maintainers spend their time repeating answers that are already written down.
+* **Who:** open-source communities, and any team that talks to contributors on Discord.
+* **What:** a bot that works out which repository a question is about, picks the docs from that repository that match the question, and answers with a local model (Ollama).
+* **How:** list your repositories and their docs in `repo_metadata.py`, add a Discord token, and run `bot.py`.
 
-[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/AOSSIE-Org/SkillBot/badge)](https://scorecard.dev/viewer/?uri=github.com/AOSSIE-Org/SkillBot)
-
-[![Best Practices](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FAOSSIE-Org%2FSkillBot%2Fmain%2Fchecklist-status.json&logo=openssf)](./BestPracticesChecklist.md)
-</p>
-
----
-
-<div align="center">
-<h1>AOSSIE Skill Bot</h1>
-<h3>Local-First Discord Assistant for Contributor Support and Repository-Aware Q&A</h3>
-</div>
-
-**Skill Bot** is a core component of the [AOSSIE Skills Ecosystem](https://github.com/AOSSIE-Org/Skills). It serves as a local-first, context-aware Discord bot designed to assist open-source contributors with onboarding, setup guidance, error debugging, and repository-specific queries. 
-
-By analyzing user queries, dynamically detecting the target repository within the organization, loading rules from `AGENTS.md`, and executing local inference via Ollama, Skill Bot delivers precise, grounded, skills-first answers in dedicated thread environments.
-
----
-
-## 🏗️ Role in the Skills Ecosystem
-
-Skill Bot acts as the primary user-facing assistant in the skills feedback loop:
-
-```mermaid
-flowchart TD
-    %% Nodes
-    SC["<b><font color='#F59E0B'>Skills Context</font></b><br><br>Skills Core (Shared Org wide skills)<br>per-repo skills (AGENTS.md + skills/ directory)"]
-    Contributors["Contributors"]
-    Maintainers["Maintainers"]
-    
-    SB["<b><font color='#F59E0B'>Skill Bot</font></b> (Discord Assistant)<br><br>Answers contributor questions<br>using asked question-oriented project skills ➔ LLM fallback"]
-    PD["<b><font color='#F59E0B'>PR Dashboard</font></b> (Merge Analysis)<br><br>Clusters PRs semantically, injects skills & communication(e.g. Discord) context.<br>Extracts PR changes briefly & open questions for maintainers to review.<br>Prepares Conflict DAG with merge reasoning & post-merge impact."]
-    SU["<b><font color='#F59E0B'>Skill Updater</font></b> (Knowledge Evolution)<br><br>Collects all logs from different components.<br>Updates relevant repo-skills by asking maintainers or admins<br>to review and approve generated updates."]
-
-    %% Edges
-    %% Contributor Flow
-    Contributors -- "Ask Questions in Discord" --> SB
-    SC -- "Powers answers" --> SB
-    SB -- "If gaps found, send logs for maintainers<br>to answer and update project skill via updater." --> SU
-
-    %% Maintainer Flow
-    Maintainers -- "Reviews PRs<br>with" --> PD
-    SC -- "Powers reasoning" --> PD
-    PD -- "If gaps found, send logs for maintainers<br>to answer and update those project skills via updater." --> SU
-
-    %% Feedback Loop & Sync
-    Maintainers -- "Collects communication platform (e.g. Discord) discussions, filters important<br>topics by giving that repo-skills context, and sends suggested updates to maintainers<br>to reformat or modify as needed (maintainer approve)" --> SU
-    SU -- "PR Skill Updater bot opens PR for gap skills and<br>recently merged PR context (maintainers approve)" --> SC
-
-    %% Style Classes
-    classDef yellowBox fill:#1E293B,stroke:#F59E0B,stroke-width:2px,color:#F8FAFC;
-    classDef purpleBox fill:#1E293B,stroke:#8B5CF6,stroke-width:2px,color:#F8FAFC;
-    
-    class SC,SB,PD,SU yellowBox;
-    class Contributors,Maintainers purpleBox;
-```
-
-1. **Contributor Q&A**: A contributor posts a query in a designated channel or tags the bot.
-2. **Context Retrieval**: Skill Bot searches the global `.clinerules`, dynamically routes queries to that repository's skills (`.agents/` + `AGENTS.md`) according to the user query, and provides this context to the local LLM to answer the user.
-3. **LLM Fallback & Gap Signaling**: If matching context is found in the repository rules, the query is answered by the local LLM. If there is a lack of necessary details, the query is written to `gap_log.json` and the bot notifies the user that the query is currently out of context and maintainers will be notified. These gap signals are later consumed by maintainers in Skill Updater to update the skills context(skills core + that repo's skill).
-4. **Knowledge Capture Loop**: The [Skill Updater](https://github.com/kpj2006/skill-updater) parses `gap_log.json` to prioritize and also extract discussions from Discord, automatically generating PR updates to keep the repository's skills core aligned with recent development decisions.
+At startup and once a day, it copies the docs you listed from each repository into `repos/`. For each question it sends the local model only the files that question needs, so it runs well on an ordinary computer.
 
 ---
 
 ## 🚀 Key Features
 
-* **Dynamic Repository Routing**: Dynamically discovers adjacent repositories in the workspace, detects the target project using query keywords or local LLM classification, and applies the repository's custom context (`AGENTS.md` / `.clinerules`).
-* **Thread-per-Query Continuity**: Every new user interaction spawns a dedicated Discord thread. This prevents main channel pollution, keeps the conversation focused, and preserves thread-scoped history.
-* **Mentor-Style Clarification**: Asks focused clarifying questions for ambiguous queries before giving a full answer, improving resolution rates and minimizing LLM noise.
-* **Fully Local Inference**: Relies entirely on a local Ollama instance (such as `llama3.2` or `qwen2.5:7b`), ensuring all contributor data remains local and avoiding external cloud API costs.
-* **Startup Backlog Recovery**: Scans the channel history upon startup to process any user queries that were posted while the bot was offline.
-* **Structured Gap Logging**: Emits structured knowledge gap events (`gap_log.json`) recording queries that couldn't be answered using local rules, feeding into the automated updater pipeline.
+* **Repository Routing**: Detects which repository a question is about from its name and keywords, falling back to local LLM classification.
+* **Small Prompts for Local Models**: Sends only the docs whose names match the question, within a fixed size budget, however many docs you list.
+* **Thread-per-Query**: Every new question gets its own Discord thread, so the main channel stays clean and history stays scoped.
+* **Clarifying Questions**: Asks a focused follow-up when a question is ambiguous, before answering.
+* **Fully Local Inference**: Uses a local Ollama model (such as `llama3.2` or `qwen2.5:7b`). No contributor data leaves the machine and there are no API costs.
+* **Startup Backlog Recovery**: On startup, answers questions posted while the bot was offline.
+* **Gap Log**: Questions it couldn't route to a repository, or found no docs for, are appended to `gap_log.json`, a plain JSON file maintainers can read to see which docs are missing.
 
 ---
 
@@ -126,117 +40,113 @@ flowchart TD
 
 ---
 
-## 🔗 Repository Links
+## 🏁 Set Up Skill Bot for Your Organization
 
-This is part of [skills ecosystem](https://github.com/AOSSIE-Org/Skills).
-1. [Skills Core Repository](https://github.com/AOSSIE-Org/Skills)
-2. [Interactive Simulation](https://github.com/kpj2006/InteractiveSimulation) (Live Demo: [demo](https://kpj2006.github.io/InteractiveSimulation/))
-3. [Pull Request Dashboard](https://github.com/AOSSIE-Org/PullRequestDashboard)
-4. [Skill Updater Pipeline](https://github.com/kpj2006/skill-updater)
+You need a machine that stays on (a server, a spare PC, or your own computer) to run the bot and the local model.
 
----
+### 1. Make your copy
 
-## 🏁 Getting Started
+Click **Use this template** at the top of this page and create a copy in your organization (for example `your-org/skillbot`). Clone it on the machine that will run the bot:
 
-### Prerequisites
+```bash
+git clone https://github.com/your-org/skillbot.git
+cd skillbot
+```
+
+### 2. List your repositories and their docs
+
+Open [`repo_metadata.py`](./repo_metadata.py) and replace the example entry with your repositories:
+
+```python
+REPO_METADATA = {
+    "EduAid": {
+        "url": "https://github.com/your-org/EduAid",       # add /tree/<branch> for another branch
+        "description": "Generates quizzes from any text",   # shown when the bot asks which project
+        "keywords": ["quiz", "quiz generator"],             # optional; the name already matches
+        "docs": ["README.md", "CONTRIBUTING.md", "docs/"],  # optional; defaults to ["README.md"]
+    },
+}
+```
+
+In `docs`, a path ending in `.md` copies that one file, and any other path copies every `.md` file in that folder.
+
+* **List only the repositories contributors ask about.** Every entry is one more option the local model has to choose between when a question doesn't name a project, so a short list gives better answers than your whole organization.
+* **A shared skills or policies repository is just another entry.** Give it keywords such as `"onboarding"` or `"ai policy"` so those questions reach it.
+
+Commit the change, so your copy keeps your list. To check it, run `python scripts/update_subtrees.py`: it copies the docs into `repos/` and warns about any path it can't find.
+
+### 3. Name docs so the bot can find them
+
+The bot doesn't send every copied doc to the model. For each question it sends:
+
+| Doc | When |
+|---|---|
+| `README.md` | Overview questions ("what is", "how", "help"), first 2,000 characters |
+| A doc whose file or folder name matches the question | For example, `CONTRIBUTING.md` for "how do I contribute?", `docs/setup.md` for "how do I install it?", `testing.md` for test questions |
+
+Other matched docs are capped at 2,000 characters each and 4,000 in total, so a long `docs` list never slows the model down. Clear file names (`setup.md`, `testing.md`, `deployment.md`, `architecture.md`, `CONTRIBUTING.md`) get the best results.
+
+Repositories that use the `.agent/` layout (`.agent/info/operational-data.md`, `.agent/core/architecture.md`, `.agent/instructions/*.md`) can list `".agent"` in `docs`. Those two files are then sent with every question, and the instruction files when the question is about them.
+
+### 4. Install Python and the local model
 
 * **Python 3.10+**
-* **Ollama** installed and running on your local machine:
-  * Pull the default model: `ollama pull llama3.2` (or the model configured in `.env`)
-* **Discord Bot Token** with `Message Content` and `Guild Members` intents enabled.
-
----
-
-### Installation & Run
-
-#### 1. Clone the Repository
-
-```bash
-git clone https://github.com/AOSSIE-Org/SkillBot.git
-cd SkillBot
-```
-
-#### 2. Set Up Virtual Environment & Dependencies
-
-**Windows (PowerShell):**
-
-```powershell
-python -m venv venv
-.\venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-```
-
-**macOS / Linux:**
+* **[Ollama](https://ollama.com/download)**, then pull a model: `ollama pull llama3.2`
+* Optional: the **[GitHub CLI](https://cli.github.com/)**, logged in with `gh auth login`, if you want contributors to be able to ask the bot to open issues.
 
 ```bash
 python -m venv venv
-source venv/bin/activate
+source venv/bin/activate        # Windows (PowerShell): .\venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
 
-#### 3. Configure Environment Variables
+### 5. Create the Discord bot
 
-Copy the `.env.example` file to `.env`:
+1. In the [Discord Developer Portal](https://discord.com/developers/applications), click **New Application**, open **Bot**, and turn on **Message Content Intent**. Copy the bot token.
+2. Under **OAuth2 → URL Generator**, tick the `bot` scope and these permissions: View Channels, Send Messages, Create Public Threads, Send Messages in Threads, Read Message History. Open the generated link to add the bot to your server.
+3. In Discord, turn on **Settings → Advanced → Developer Mode**, then right-click the channel where contributors ask questions and choose **Copy Channel ID**.
+
+### 6. Configure
 
 ```bash
 cp .env.example .env
 ```
 
-Fill in the configuration details:
-
 ```env
 DISCORD_TOKEN=your_discord_bot_token
-DISCORD_CHANNEL_ID=your_target_channel_id
-OLLAMA_MODEL=llama3.2
-SKILL_FILE_PATH=.clinerules
+DISCORD_CHANNEL_ID=your_channel_id
+ORG_NAME=Your Org               # optional: your organization's name, used in the model's instructions
 ```
 
-#### 4. Launching the Bot
+Other settings, all optional, are described in [`.env.example`](./.env.example): the model (`OLLAMA_MODEL`), its context size (`OLLAMA_NUM_CTX`), and how often docs are refreshed (`SYNC_INTERVAL_HOURS`).
 
-Start the bot using Python:
+### 7. Run
 
 ```bash
 python bot.py
 ```
 
-*(On Windows, you can also use `start_bot_hidden.vbs` to execute the bot silently in the background)*.
+On startup the bot copies the docs into `repos/`, then answers questions in the channel. It refreshes them every 24 hours. On Windows, `start_bot_hidden.vbs` runs it in the background.
+
+### Keeping it useful
+
+* **Read `gap_log.json`.** It lists questions the bot couldn't route or had no docs for, which tells you which docs to write next, or which keyword to add to `repo_metadata.py`.
+* **Get updates** by pulling from the Skill Bot repository you made your copy from: `git remote add upstream <its URL>`, then `git pull upstream main`. `repos/` is not tracked by git, so updates never touch your docs. If `repo_metadata.py` conflicts, keep your version.
 
 ---
 
-## 🗺️ Roadmap & Evolution
+## 🗺️ Roadmap
 
-The long-term development of Skill Bot is divided into several milestones outlined in the [roadmap.md](https://github.com/AOSSIE-Org/SkillBot/blob/main/roadmap.md).
+Planned work is listed in [roadmap.md](./roadmap.md).
 
 ---
 
 ## 🙌 Contributing
 
-⭐ Don't forget to star this repository if you find it useful! ⭐
-
-Thank you for considering contributing to this project! Contributions are highly appreciated and welcomed. To ensure smooth collaboration, please refer to our [Contribution Guidelines](./CONTRIBUTING.md).
-
----
-
-## ✨ Maintainers
-
-TODO: Add maintainer information
-
-* [Karun Pacholi](https://github.com/kpj2006) - Lead Developer & Architect
-* [zahnentferner](https://github.com/Zahnentferner) - admin & reviewer
+Contributions are welcome. See the [Contribution Guidelines](./CONTRIBUTING.md).
 
 ---
 
 ## 📍 License
 
 This project is licensed under the GNU General Public License v3.0. See the [LICENSE](LICENSE) file for details.
-
----
-
-## 💪 Thanks To All Contributors
-
-Thanks a lot for spending your time helping TODO grow. Keep rocking 🥂
-
-[![Contributors](https://contrib.rocks/image?repo=AOSSIE-Org/SkillBot)](https://github.com/AOSSIE-Org/SkillBot/graphs/contributors)
-
-
-© 2026 AOSSIE

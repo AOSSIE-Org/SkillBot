@@ -45,7 +45,12 @@ def resolve_doc_paths(docs: list[str], owner: str, repo: str, ref: str, client: 
     # One API call lists the whole repository; only made when a folder is requested.
     res = client.get(f"https://api.github.com/repos/{owner}/{repo}/git/trees/{ref}", params={"recursive": "1"})
     res.raise_for_status()
-    for entry in res.json().get("tree", []):
+    data = res.json()
+    if data.get("truncated"):
+        # A partial listing would make the cleanup below delete docs that still exist.
+        raise ValueError(f"GitHub truncated the file list of {owner}/{repo}@{ref} (repository too large); "
+                         "list single .md files in \"docs\" instead of folders")
+    for entry in data.get("tree", []):
         path = entry["path"]
         if entry["type"] != "blob" or not path.lower().endswith(".md") or entry.get("size", 0) > MAX_FILE_BYTES:
             continue
@@ -72,7 +77,7 @@ def sync_repo_context(repo_name: str, meta: dict, client: httpx.Client) -> bool:
 
     try:
         doc_paths = resolve_doc_paths(meta.get("docs", DEFAULT_DOCS), owner, repo, ref, client)
-    except httpx.HTTPError as e:
+    except (httpx.HTTPError, ValueError) as e:
         logger.error(f"Cannot list files for {repo_name}, keeping the previous copy: {e}")
         return False
 

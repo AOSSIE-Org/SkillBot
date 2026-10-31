@@ -36,7 +36,7 @@ DISCORD_CHANNEL_ID = os.getenv('DISCORD_CHANNEL_ID')
 DISCORD_CHANNEL_ID_INT = None
 OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'llama3.2')
 ORG_NAME = os.getenv('ORG_NAME', '').strip()
-# Hours between refreshes of repos/ from the repositories in repo_metadata.py. 0 turns it off.
+# Hours between refreshes of repos/ from the repositories in repo_metadata.py. 0 = only the startup sync.
 SYNC_INTERVAL_HOURS = float(os.getenv('SYNC_INTERVAL_HOURS', '24'))
 # On startup, answer missed questions only if they are newer than this.
 BACKLOG_MAX_AGE_HOURS = float(os.getenv('BACKLOG_MAX_AGE_HOURS', '24'))
@@ -489,6 +489,9 @@ async def process_message(message: discord.Message):
     if not is_in_configured_channel and not bot_mentioned:
         return
 
+    # Covers both the startup backlog and live messages: wait for the first docs sync.
+    await initial_sync_done.wait()
+
     author = message.author
     cleaned_query = clean_bot_mention(message.content)
 
@@ -591,7 +594,7 @@ async def process_message(message: discord.Message):
 
             # Load repository-specific context dynamically
             combined_query_text = f"{cleaned_query} {full_prompt} {external_link_info}"
-            repo_context = load_repo_context(mapped_repo, combined_query_text)
+            repo_context = await asyncio.to_thread(load_repo_context, mapped_repo, combined_query_text)
 
             if external_link_info:
                 # Fetched PR/Issue data is request-specific, not a repository guideline — keep it
@@ -615,6 +618,11 @@ async def process_message(message: discord.Message):
                 if guessed:
                     # The repository was only a guess, so ask instead of answering about the wrong one.
                     logger.info("❓ NO DOCS for a guessed repository — asking which project instead")
+                    # The thread name carries the guess and would win over the user's reply.
+                    try:
+                        await thread.edit(name=thread.name.replace(mapped_repo, "Unassigned", 1)[:100])
+                    except Exception as e:
+                        logger.warning(f"Could not reset name of thread {thread.id}: {e}")
                     await send_clarification_request(thread, available_repos)
                     await _log_gap(cleaned_query, "repo_clarification_needed", thread_id=thread.id)
                 else:
@@ -687,6 +695,11 @@ def _sync_context_files():
     sync_all_subtrees()
 
 
+# Set once the startup sync has finished (or failed), so no question is answered from an
+# empty repos/ on a fresh clone.
+initial_sync_done = asyncio.Event()
+
+
 async def context_sync_loop():
     while True:
         logger.info(f"Syncing docs for the {len(REPO_METADATA)} repositories in repo_metadata.py...")
@@ -695,6 +708,9 @@ async def context_sync_loop():
             logger.info("Context sync done.")
         except (Exception, SystemExit) as e:
             logger.error(f"Context sync failed, keeping the previous docs: {e}")
+        initial_sync_done.set()
+        if SYNC_INTERVAL_HOURS <= 0:
+            return  # startup sync only
         await asyncio.sleep(SYNC_INTERVAL_HOURS * 3600)
 
 
@@ -707,7 +723,7 @@ async def on_ready():
     logger.info(f"Logged in as {client.user.name} ({client.user.id})")
 
     # on_ready fires again after every reconnect; start the sync loop only once.
-    if SYNC_INTERVAL_HOURS > 0 and context_sync_task is None:
+    if context_sync_task is None:
         context_sync_task = asyncio.create_task(context_sync_loop())
 
     # Wait for Ollama to be ready before processing the backlog

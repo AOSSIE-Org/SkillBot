@@ -618,7 +618,7 @@ async def send_clarification_request(
         url = details.get("url", "")
         link = f" ([GitHub Link]({url}))" if url else ""
         line = f"- **{repo}**{link}: {details.get('description', '')[:80]}"
-        if sum(len(l) + 1 for l in repos_lines) + len(line) > list_budget:
+        if sum(len(existing) + 1 for existing in repos_lines) + len(line) > list_budget:
             repos_lines.append(f"- ...and {len(available_repos) - len(repos_lines)} more")
             break
         repos_lines.append(line)

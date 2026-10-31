@@ -1,11 +1,10 @@
-# AGENTS.md — AOSSIE Skill Bot
+# AGENTS.md — Skill Bot
 
-Skill Bot is a local-first Discord assistant. It watches a Discord channel, detects which
-AOSSIE repository a contributor is asking about, loads that repository's `AGENTS.md` /
-`.clinerules` context, and answers via a local Ollama model — falling back to a scoped
-clarification prompt and a `gap_log.json` entry when it can't answer from context. It is one
-module of the [AOSSIE Skills Ecosystem](https://github.com/AOSSIE-Org/Skills); see that repo's
-`AGENTS.md` for the ecosystem-wide picture.
+Skill Bot is a local-first Discord assistant, and a template any organization can copy. It
+watches a Discord channel, detects which repository (from `repo_metadata.py`) a contributor is
+asking about, loads only the docs from that repository that match the question, and answers via
+a local Ollama model. When no doc matches, it asks which project is meant or says the docs don't
+cover it, and writes a `gap_log.json` entry.
 
 ## Setup & Run
 
@@ -18,26 +17,25 @@ ollama pull llama3.2            # or whatever OLLAMA_MODEL is set to
 python bot.py
 ```
 
-Requires Python 3.10+, a running local Ollama instance, and a Discord bot token with
-`Message Content` + `Guild Members` intents. On Windows, `start_bot_hidden.vbs` runs the bot
+Requires Python 3.10+, a running local Ollama instance, and a Discord bot token with the
+`Message Content` intent. On Windows, `start_bot_hidden.vbs` runs the bot
 silently in the background instead of `python bot.py`.
 
 ## Code Map
 
 - `bot.py` — Discord event loop: message handling, thread-per-query creation, Ollama calls,
-  backlog recovery on startup.
-- `repo_router.py` — repository detection (keyword match → LLM classification fallback),
-  context loading, clarification requests, GitHub issue/comment helpers.
-- `repo_metadata.py` — static metadata about routable repositories.
+  backlog recovery on startup (last `BACKLOG_MAX_AGE_HOURS` only), docs sync loop.
+- `repo_router.py` — repository detection (longest keyword/name match → LLM classification
+  fallback), per-question context loading, clarification requests, GitHub issue/comment helpers.
+- `repo_metadata.py` — the repositories the bot answers about: URL, description, keywords and
+  the `docs` paths to copy. A template: each organization replaces the example entry.
+- `scripts/update_subtrees.py` — copies each entry's `docs` into `repos/<name>/`. The bot runs it
+  at startup and every `SYNC_INTERVAL_HOURS`; it can also be run by hand to check the list.
 - `.clinerules` — system prompt for the "Open Source Clarification & Guardrail Assistant"
   fallback persona, used when a query can't be routed to a specific repo.
-- `org-wide-skills/` — a synced mirror of the [Skills Core](https://github.com/AOSSIE-Org/Skills)
-  repo's shared skills. **Do not hand-edit** — run `scripts/sync_org_skills.py` /
-  `scripts/update_subtrees.py` to refresh it, and send fixes upstream to Skills Core instead.
-- `repos/` — git subtrees of the individual repositories Skill Bot routes queries to
-  (their `AGENTS.md` / skill files are what actually gets loaded per query).
+- `repos/` — generated, not tracked by git. Never hand-edit; change `repo_metadata.py` instead.
 - `gap_log.json` — append-only, machine-generated log of queries the bot couldn't answer from
-  context. Treat as generated output consumed by the Skill Updater pipeline; don't hand-edit
+  context. Treat as generated output (maintainers and Skill Updater read it); don't hand-edit
   entries, and don't delete history when adding new ones.
 - `scripts/test_bot_routing.py`, `scripts/routing_smoke_check.py`,
   `scripts/test_link_and_issue_features.py` — routing/behavior checks, run directly with
@@ -55,7 +53,8 @@ whole org (300+ repos), so:
 
 - Any feature that grows per-request context (more skill files loaded, more Discord history,
   multi-turn memory, multi-PR summaries) must account for this budget explicitly — check the
-  combined token cost of what gets loaded per query before adding to it.
+  combined token cost of what gets loaded per query before adding to it. Docs outside `.agent/`
+  are already capped (`OTHER_DOCS_BUDGET` in `repo_router.py`); keep new context under a cap too.
 - Neither Ollama call currently round-trips the `context` token array, so requests are
   stateless across turns/threads today. If a future feature adds multi-turn continuity, key it
   per Discord thread ID — never share context across repos or threads.
@@ -85,10 +84,11 @@ checks, in order:
   GitHub. See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full workflow, branch/commit
   conventions, and pre-commit setup.
 - **AI disclosure required**: if you used an AI tool for code, tests, or docs, say so in the PR
-  description (tool + scope). See `org-wide-skills/GIT-DIS-AIPolicy/SKILL.md` for the full
-  policy — it also forbids unguided automatic issue/bug generation.
+  description (tool + scope). See the
+  [AI policy skill](https://github.com/AOSSIE-Org/Skills/blob/main/GIT-DIS-AIPolicy/SKILL.md) for
+  the full policy — it also forbids unguided automatic issue/bug generation.
 - **Code style**: PEP 8, type hints on new functions, docstrings on public functions/classes,
   no blocking sync calls in `async def` handlers (this is a `discord.py` + `httpx` async
   codebase), use the configured `logger` instead of `print`.
-- Bold terms across this ecosystem's docs (e.g. **context load**, **gap signal**) are defined in
-  [org-wide-skills/GLOSSARY.md](org-wide-skills/GLOSSARY.md).
+- Bold terms in AOSSIE's skill docs (e.g. **context load**, **gap signal**) are defined in the
+  [Skills glossary](https://github.com/AOSSIE-Org/Skills/blob/main/GLOSSARY.md).

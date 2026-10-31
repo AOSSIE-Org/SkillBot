@@ -329,3 +329,5 @@ venv/
 .env
 __pycache__/
 .commandcode/
+# Filled by scripts/update_subtrees.py when the bot starts
+repos/

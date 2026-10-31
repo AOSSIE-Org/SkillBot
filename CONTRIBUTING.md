@@ -1,4 +1,4 @@
-# Contributing to AOSSIE Skill Bot
+# Contributing to Skill Bot
 
 ⭐ First off, thank you for considering contributing to this project! ⭐
 

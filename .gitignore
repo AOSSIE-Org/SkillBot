@@ -331,3 +331,6 @@ __pycache__/
 .commandcode/
 # Filled by scripts/update_subtrees.py when the bot starts
 repos/
+
+# Written by the bot at runtime: questions it could not answer
+gap_log.json

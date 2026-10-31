@@ -34,13 +34,12 @@ silently in the background instead of `python bot.py`.
 - `.clinerules` — system prompt for the "Open Source Clarification & Guardrail Assistant"
   fallback persona, used when a query can't be routed to a specific repo.
 - `repos/` — generated, not tracked by git. Never hand-edit; change `repo_metadata.py` instead.
-- `gap_log.json` — append-only, machine-generated log of queries the bot couldn't answer from
+- `gap_log.json` — git-ignored, machine-generated log of queries the bot couldn't answer from
   context. Treat as generated output (maintainers and Skill Updater read it); don't hand-edit
   entries, and don't delete history when adding new ones.
 - `scripts/test_bot_routing.py`, `scripts/routing_smoke_check.py`,
   `scripts/test_link_and_issue_features.py` — routing/behavior checks, run directly with
   `python scripts/<name>.py`.
-- `roadmap.md` — longer-term milestones; check before proposing large structural changes.
 
 ## Local Model Constraints (hard budget, not a nice-to-have)
 

@@ -89,19 +89,27 @@ def _save_gap_log(entries):
 
 gap_log_lock = asyncio.Lock()
 
-async def _log_gap(query, reason, thread_id=None):
- async with gap_log_lock:
-    entry = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "query": query,
-        "reason": reason,
-    }
-    if thread_id:
-        entry["thread_id"] = thread_id
-    entries = _load_gap_log()
-    entries.append(entry)
-    _save_gap_log(entries)
-    logger.info(f"Gap logged: {reason} — query: {query[:80]}")
+async def _log_gap(query: str, reason: str, thread_id: int | None = None) -> None:
+    """Append one entry to the gap log.
+
+    The read-modify-write sequence stays under ``gap_log_lock`` so concurrent
+    callers cannot lose entries, but the file I/O itself runs in a worker
+    thread via ``asyncio.to_thread``. ``open()``, ``json.load()`` and
+    ``json.dump()`` are synchronous and would otherwise block the Discord
+    event loop while the log is read and rewritten.
+    """
+    async with gap_log_lock:
+        entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "query": query,
+            "reason": reason,
+        }
+        if thread_id:
+            entry["thread_id"] = thread_id
+        entries = await asyncio.to_thread(_load_gap_log)
+        entries.append(entry)
+        await asyncio.to_thread(_save_gap_log, entries)
+        logger.info(f"Gap logged: {reason} — query: {query[:80]}")
 
 
 def load_skill_context() -> str:

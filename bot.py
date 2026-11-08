@@ -76,9 +76,14 @@ def _load_gap_log():
     if GAP_LOG_PATH.exists():
         try:
             with open(GAP_LOG_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
+                entries = json.load(f)
         except json.JSONDecodeError:
             logger.warning("gap_log.json corrupted, starting fresh")
+            return []
+        if not isinstance(entries, list):
+            logger.warning("gap_log.json does not hold a list, starting fresh")
+            return []
+        return entries
     return []
 
 
@@ -89,19 +94,48 @@ def _save_gap_log(entries):
 
 gap_log_lock = asyncio.Lock()
 
-async def _log_gap(query, reason, thread_id=None):
- async with gap_log_lock:
-    entry = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "query": query,
-        "reason": reason,
-    }
-    if thread_id:
-        entry["thread_id"] = thread_id
-    entries = _load_gap_log()
-    entries.append(entry)
-    _save_gap_log(entries)
-    logger.info(f"Gap logged: {reason} — query: {query[:80]}")
+async def _log_gap(query: str, reason: str, thread_id: int | None = None) -> None:
+    """Append one entry to the gap log.
+
+    The read-modify-write sequence stays under ``gap_log_lock`` so concurrent
+    callers cannot lose entries, but the file I/O itself runs in a worker
+    thread via ``asyncio.to_thread``. ``open()``, ``json.load()`` and
+    ``json.dump()`` are synchronous and would otherwise block the Discord
+    event loop while the log is read and rewritten.
+    """
+    async with gap_log_lock:
+        entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "query": query,
+            "reason": reason,
+        }
+        if thread_id:
+            entry["thread_id"] = thread_id
+        entries = await asyncio.to_thread(_load_gap_log)
+        entries.append(entry)
+        # asyncio.to_thread cannot stop the worker when the caller is
+        # cancelled. Shield the save so the lock is not released while the
+        # worker is still writing — the next caller could read a partial
+        # log and lose entries — and wait for the write before re-raising.
+        save_task = asyncio.create_task(asyncio.to_thread(_save_gap_log, entries))
+        try:
+            await asyncio.shield(save_task)
+        except asyncio.CancelledError:
+            # Keep the lock until the worker finishes even if this call is
+            # cancelled again while waiting; releasing early lets the next
+            # caller read a partially written log and lose entries.
+            while True:
+                try:
+                    await asyncio.shield(save_task)
+                    break
+                except asyncio.CancelledError:
+                    if save_task.done():
+                        break
+                except Exception:
+                    logger.exception("Gap log save failed while handling cancellation")
+                    break
+            raise
+        logger.info(f"Gap logged: {reason} — query: {query[:80]}")
 
 
 def load_skill_context() -> str:

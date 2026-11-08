@@ -108,7 +108,19 @@ async def _log_gap(query: str, reason: str, thread_id: int | None = None) -> Non
             entry["thread_id"] = thread_id
         entries = await asyncio.to_thread(_load_gap_log)
         entries.append(entry)
-        await asyncio.to_thread(_save_gap_log, entries)
+        # asyncio.to_thread cannot stop the worker when the caller is
+        # cancelled. Shield the save so the lock is not released while the
+        # worker is still writing — the next caller could read a partial
+        # log and lose entries — and wait for the write before re-raising.
+        save_task = asyncio.create_task(asyncio.to_thread(_save_gap_log, entries))
+        try:
+            await asyncio.shield(save_task)
+        except asyncio.CancelledError:
+            try:
+                await save_task
+            except Exception:
+                logger.exception("Gap log save failed while handling cancellation")
+            raise
         logger.info(f"Gap logged: {reason} — query: {query[:80]}")
 
 

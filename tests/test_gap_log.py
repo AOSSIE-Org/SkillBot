@@ -8,6 +8,7 @@ import json
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -67,6 +68,82 @@ class GapLogTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(len(self._read_log()), 25)
+
+    async def test_second_load_waits_for_first_save(self):
+        """The lock must cover the whole read-modify-write sequence.
+
+        The first save is held open in its worker thread. The second call
+        must not load the log until that save finishes; without the lock it
+        loads mid-write, so this fails even when writes happen to run
+        serially.
+        """
+        events = []
+        save_started = threading.Event()
+        release_save = threading.Event()
+        real_load, real_save = bot._load_gap_log, bot._save_gap_log
+
+        def tracking_load():
+            events.append("load")
+            return real_load()
+
+        def blocking_save(entries):
+            events.append("save_start")
+            save_started.set()
+            if not release_save.wait(timeout=10):
+                raise TimeoutError("test never released the first save")
+            real_save(entries)
+            events.append("save_end")
+
+        with patch.object(bot, "_load_gap_log", tracking_load), patch.object(
+            bot, "_save_gap_log", blocking_save
+        ):
+            first = asyncio.create_task(bot._log_gap("first", "no_matching_docs"))
+            self.assertTrue(await asyncio.to_thread(save_started.wait, 10))
+            second = asyncio.create_task(bot._log_gap("second", "no_matching_docs"))
+            # Give the second call time to reach its load. With the lock it
+            # cannot get there; without the lock it loads while the first
+            # save is still blocked.
+            deadline = time.monotonic() + 5
+            while events.count("load") < 2 and time.monotonic() < deadline:
+                await asyncio.sleep(0.01)
+            release_save.set()
+            await asyncio.gather(first, second)
+
+        self.assertEqual(len(self._read_log()), 2)
+        # The second load must come after the first save finished.
+        self.assertGreater(events.index("load", 1), events.index("save_end"))
+
+    async def test_cancelled_caller_keeps_lock_until_save_finishes(self):
+        """Cancelling a caller mid-save must not release the lock early.
+
+        ``asyncio.to_thread`` cannot stop the worker thread, so a cancelled
+        caller must still wait for the write before releasing the lock —
+        otherwise the next caller can read a partially written log.
+        """
+        save_started = threading.Event()
+        release_save = threading.Event()
+        real_save = bot._save_gap_log
+
+        def blocking_save(entries):
+            save_started.set()
+            if not release_save.wait(timeout=10):
+                raise TimeoutError("test never released the save")
+            real_save(entries)
+
+        with patch.object(bot, "_save_gap_log", blocking_save):
+            caller = asyncio.create_task(bot._log_gap("q", "no_matching_docs"))
+            self.assertTrue(await asyncio.to_thread(save_started.wait, 10))
+            caller.cancel()
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            # The worker is still writing: the lock must still be held.
+            self.assertTrue(bot.gap_log_lock.locked())
+            release_save.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await caller
+
+        self.assertFalse(bot.gap_log_lock.locked())
+        self.assertEqual(len(self._read_log()), 1)
 
     async def test_file_io_runs_off_the_event_loop_thread(self):
         """Regression test for #57: the sync read/write must not run inline."""

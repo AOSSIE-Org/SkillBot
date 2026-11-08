@@ -76,9 +76,14 @@ def _load_gap_log():
     if GAP_LOG_PATH.exists():
         try:
             with open(GAP_LOG_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
+                entries = json.load(f)
         except json.JSONDecodeError:
             logger.warning("gap_log.json corrupted, starting fresh")
+            return []
+        if not isinstance(entries, list):
+            logger.warning("gap_log.json does not hold a list, starting fresh")
+            return []
+        return entries
     return []
 
 
@@ -116,10 +121,19 @@ async def _log_gap(query: str, reason: str, thread_id: int | None = None) -> Non
         try:
             await asyncio.shield(save_task)
         except asyncio.CancelledError:
-            try:
-                await save_task
-            except Exception:
-                logger.exception("Gap log save failed while handling cancellation")
+            # Keep the lock until the worker finishes even if this call is
+            # cancelled again while waiting; releasing early lets the next
+            # caller read a partially written log and lose entries.
+            while True:
+                try:
+                    await asyncio.shield(save_task)
+                    break
+                except asyncio.CancelledError:
+                    if save_task.done():
+                        break
+                except Exception:
+                    logger.exception("Gap log save failed while handling cancellation")
+                    break
             raise
         logger.info(f"Gap logged: {reason} — query: {query[:80]}")
 

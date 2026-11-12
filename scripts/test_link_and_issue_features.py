@@ -181,6 +181,17 @@ def section_5_issue_trigger_detection():
         "make an issue for this bug",
         "CREATE AN ISSUE",
         "create a issue for this",  # grammatically odd but should still match ("an?")
+        # The article is optional in normal English, and it is usually dropped in
+        # short chat messages.
+        "create issue for this",
+        "open issue",
+        "make issue",
+        "file issue about the crash",
+        "raise issue please",
+        # The word "github" may sit between the article and "issue".
+        "create a github issue for this",
+        "open a GitHub issue",
+        "file github issue",
     ]
     for q in true_cases:
         check(f"should trigger: {q!r}", is_issue_creation_request(q))
@@ -192,6 +203,8 @@ def section_5_issue_trigger_detection():
         "issue-tracker.md",
         "opened an issue yesterday",  # past tense "opened" must not match "open"
         "no issue here",
+        "open issues list",
+        "the issue is open",
     ]
     for q in false_cases:
         check(f"should NOT trigger: {q!r}", not is_issue_creation_request(q))

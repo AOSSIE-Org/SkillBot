@@ -309,7 +309,10 @@ def is_query_covered(query: str) -> bool:
     return False
 
 
-ISSUE_TRIGGER_PATTERN = re.compile(r"\b(create|open|file|raise|make)\s+an?\s+issue\b", re.IGNORECASE)
+ISSUE_TRIGGER_PATTERN = re.compile(
+    r"\b(?:create|open|file|raise|make)\s+(?:an?\s+)?(?:github\s+)?issue\b",
+    re.IGNORECASE,
+)
 
 
 def is_issue_creation_request(query: str) -> bool:

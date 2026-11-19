@@ -117,7 +117,6 @@ def sync_repo_context(repo_name: str, meta: dict, client: httpx.Client) -> bool:
 
 
 def sync_all_subtrees():
-    os.chdir(bot_root)
     repos_dir = bot_root / "repos"
     repos_dir.mkdir(exist_ok=True)
 

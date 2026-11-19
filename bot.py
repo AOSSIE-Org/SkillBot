@@ -40,13 +40,14 @@ ORG_NAME = os.getenv('ORG_NAME', '').strip()
 SYNC_INTERVAL_HOURS = float(os.getenv('SYNC_INTERVAL_HOURS', '24'))
 # On startup, answer missed questions only if they are newer than this.
 BACKLOG_MAX_AGE_HOURS = float(os.getenv('BACKLOG_MAX_AGE_HOURS', '24'))
-SKILL_FILE_PATH = os.getenv('SKILL_FILE_PATH', '.clinerules')
+BOT_ROOT = Path(__file__).resolve().parent
+SKILL_FILE_PATH = os.getenv('SKILL_FILE_PATH') or str(BOT_ROOT / '.clinerules')
 OLLAMA_URL = "http://localhost:11434/api/generate"
 # Ollama's own runtime default measured via `ollama ps` on this machine (no num_ctx was set
 # anywhere before this). Made explicit + tunable since it silently caps every request's
 # system+prompt+response budget — raising it costs VRAM/RAM this machine is already tight on.
 OLLAMA_NUM_CTX = int(os.getenv('OLLAMA_NUM_CTX', '4096'))
-GAP_LOG_PATH = Path("gap_log.json")
+GAP_LOG_PATH = BOT_ROOT / "gap_log.json"
 MAX_RETRIES = 3
 
 # Initialize bot with intents

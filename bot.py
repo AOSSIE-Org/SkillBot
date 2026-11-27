@@ -2,6 +2,7 @@ import os
 import re
 import json
 import logging
+import tempfile
 import discord
 import httpx
 import asyncio
@@ -83,9 +84,39 @@ def _load_gap_log():
 
 
 def _save_gap_log(entries):
+    """Atomically replace the gap log after its complete JSON is on disk.
+
+    The temporary file is created beside the log so ``os.replace`` is atomic on
+    the target filesystem.  A failed write therefore leaves the previous log
+    untouched.
+    """
     GAP_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(GAP_LOG_PATH, "w", encoding="utf-8") as f:
-        json.dump(entries, f, indent=2, default=str)
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=GAP_LOG_PATH.parent,
+            prefix=f".{GAP_LOG_PATH.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temp_file:
+            temp_path = Path(temp_file.name)
+            json.dump(entries, temp_file, indent=2, default=str)
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+        os.replace(temp_path, GAP_LOG_PATH)
+    except Exception:
+        if temp_path is not None:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError as cleanup_error:
+                logger.warning(
+                    "Could not remove temporary gap log %s: %s",
+                    temp_path,
+                    cleanup_error,
+                )
+        raise
 
 gap_log_lock = asyncio.Lock()
 
